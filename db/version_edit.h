@@ -15,10 +15,11 @@ namespace leveldb {
 class VersionSet;
 
 ///////////meggie
-struct PARTNER {
+struct Partner {
     uint64_t partner_number;
     InternalKey parter_smallest;
     InternalKey partner_largest;
+    bool comtainsend;
 };
 ///////////meggie
 
@@ -33,7 +34,7 @@ struct FileMetaData {
   //////////////meggie 
   InternalKey global_smallest;
   InternalKey global_largest;
-  vector<PARTNER> partners;
+  std::vector<Partner> partners;
   //////////////meggie
   FileMetaData() : refs(0), allowed_seeks(1 << 30), file_size(0) { }
   

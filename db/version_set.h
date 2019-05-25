@@ -23,6 +23,10 @@
 #include "port/port.h"
 #include "port/thread_annotations.h"
 
+/////////////meggie
+#define PCompactionThresh 0.5
+/////////////meggie
+
 namespace leveldb {
 
 namespace log { class Writer; }
@@ -35,6 +39,22 @@ class TableCache;
 class Version;
 class VersionSet;
 class WritableFile;
+
+//////////////meggie
+struct OverlapVictim {
+    int victim_index;
+    InternalKey overlapstart;
+    InternalKey overlapend;
+    bool containsend;
+};
+
+struct SplitCompaction {
+    std::set<int> victims;
+    InternalKey victim_start;
+    InternalKey victim_end;
+    bool containsend;
+};
+//////////////meggie
 
 // Return the smallest index i such that files[i]->largest >= key.
 // Return files.size() if there is no such file.
@@ -256,7 +276,13 @@ class VersionSet {
   // May also mutate some internal state.
   void AddLiveFiles(std::set<uint64_t>* live);
   ////////////////meggie
-  void PrintOverlappingRatio(Compaction* c); 
+  void GetCompactionType(Compaction* c,
+            std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
+            std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
+  void GetMergedTIterator(Compaction* c, 
+        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
+  void PrintSplitCompaction(SplitCompaction* sptcompaction);
+  void GetSplitCompactions(Compaction* c);
   ////////////////meggie
 
   // Return the approximate offset in the database of the data for

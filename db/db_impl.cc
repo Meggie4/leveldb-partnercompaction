@@ -919,6 +919,36 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
 }
 
+////////////////meggie 
+Status DBImpl::DoCompactionWorkByCondition(CompactionState* compact,
+        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
+        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist) {
+   //针对input_[1]中的SSTable是经过何种compaction 
+    DEBUG_T("pcompactionlist index: ");
+    for(int i = 0; i < pcompactionlist.size(); i++) {
+        auto pair = pcompactionlist[i];
+        DEBUG_T("%d, ", pair.first);
+    }
+
+    DEBUG_T("\ntcompactionlist index: ");
+    for(int j = 0; j < tcompactionlist.size(); j++) {
+        auto pair = tcompactionlist[j];
+        DEBUG_T("%d, ", pair.first);
+    }
+    DEBUG_T("\n");
+
+    if(tcompactionlist.size() > 1)
+        versions_->GetMergedTIterator(compact->compaction,
+                        tcompactionlist);
+    DEBUG_T("-----------------printoverlap-------------\n\n");
+
+    
+    return Status::OK();
+}
+
+////////////////meggie
+
+
 Status DBImpl::DoCompactionWork(CompactionState* compact) {
   const uint64_t start_micros = env_->NowMicros();
   int64_t imm_micros = 0;  // Micros spent doing imm_ compactions
@@ -932,10 +962,15 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   /////////////meggie
   if(compact->compaction->level() > 0) {
-      std::vector<double> overlapratios;
+      std::vector<std::pair<int, std::vector<OverlapVictim*>>> pcompactionlist;
+      std::vector<std::pair<int, std::vector<OverlapVictim*>>> tcompactionlist;
       start_timer(COMPUTE_OVERLLAP); 
-      versions_->PrintOverlappingRatio(compact->compaction);
+      versions_->GetCompactionType(compact->compaction, 
+              pcompactionlist, tcompactionlist);
+      versions_->GetSplitCompactions(compact->compaction);
       record_timer(COMPUTE_OVERLLAP);
+      //return DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
+      DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
   }
   /////////////meggie
 

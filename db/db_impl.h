@@ -26,6 +26,9 @@ class TableCache;
 class Version;
 class VersionEdit;
 class VersionSet;
+//////////meggie
+struct OverlapVictim;
+//////////meggie
 
 class DBImpl : public DB {
  public:
@@ -117,6 +120,12 @@ class DBImpl : public DB {
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   Status DoCompactionWork(CompactionState* compact)
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
+  ///////////////meggie
+  Status DoCompactionWorkByCondition(CompactionState* compact,
+        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
+        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
+  ///////////////meggie
 
   Status OpenCompactionOutputFile(CompactionState* compact);
   Status FinishCompactionOutputFile(CompactionState* compact, Iterator* input);

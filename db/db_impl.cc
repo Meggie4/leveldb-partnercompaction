@@ -864,6 +864,7 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   }
   const uint64_t current_bytes = compact->builder->FileSize();
   compact->current_output()->file_size = current_bytes;
+  
   compact->total_bytes += current_bytes;
   delete compact->builder;
   compact->builder = nullptr;
@@ -920,7 +921,7 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
 }
 
 ////////////////meggie 
-Status DBImpl::DoCompactionWorkByCondition(CompactionState* compact,
+/*Status DBImpl::DoCompactionWorkByCondition(CompactionState* compact,
         std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
         std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist) {
    //针对input_[1]中的SSTable是经过何种compaction 
@@ -945,7 +946,24 @@ Status DBImpl::DoCompactionWorkByCondition(CompactionState* compact,
     
     return Status::OK();
 }
+*/
 
+/*Status DBImpl::DoSplitCompactionWork(CompactionState* compact,
+									 std::vector<SplitCompaction*>& t_sptcompactions,
+									 std::vector<SplitCompaction*>& p_sptcompactions) {
+	Compaction* c = compact->compaction;
+	bool partner_in_victims = versions_->HasPartnerInVictim(c);
+	if(partner_in_victims) {
+		DealSplitCompactionWithPartnerVictim(compact, 
+											t_sptcompactions,
+											p_sptcompactions);
+	} else {
+		if(t_sptcompactions)
+			DealTSplitCompaction(t_sptcompactions);
+		if(p_sptcompactions) 
+			DealPSplitCompaction(p_sptcompactions);
+	}
+}*/
 ////////////////meggie
 
 
@@ -962,15 +980,15 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   /////////////meggie
   if(compact->compaction->level() > 0) {
-      std::vector<std::pair<int, std::vector<OverlapVictim*>>> pcompactionlist;
-      std::vector<std::pair<int, std::vector<OverlapVictim*>>> tcompactionlist;
+      std::vector<TSplitCompaction*> t_sptcompactions;
+      std::vector<SplitCompaction*> p_sptcompactions;
       start_timer(COMPUTE_OVERLLAP); 
-      versions_->GetCompactionType(compact->compaction, 
-              pcompactionlist, tcompactionlist);
-      versions_->GetSplitCompactions(compact->compaction);
+      versions_->GetSplitCompactions(compact->compaction, 
+									 t_sptcompactions,
+									 p_sptcompactions);
       record_timer(COMPUTE_OVERLLAP);
       //return DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
-      DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
+      //DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
   }
   /////////////meggie
 

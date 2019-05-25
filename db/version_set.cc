@@ -1158,334 +1158,176 @@ const char* VersionSet::LevelSummary(LevelSummaryStorage* scratch) const {
 }
 
 ////////////////////meggie
-/*
-void VersionSet::GetCompactionType2(Compaction*c,
-                        std::vector<std::pair<int, 
-                            std::vector<OverlapVictim>>>& compaction_types) {
-    assert(c->level() > 0);
-    DEBUG_T("level:%d, inputs_[0]:size:%d\n", c->level(), c->inputs_[0].size());
-
-    std::vector<FileMetaData*>& inputs1 = c->inputs_[0];
-    std::vector<FileMetaData*>& inputs2 = c->inputs_[1];
-   
-    int sz1 = inputs1.size();
-    int sz2 = inputs2.size();
-
-    InternalKey start, limit;
-    GetRange(c->inputs_[0], &start, &limit);
-
-    int64_t size = inputs_.size();
-    
-    
-    
-
-
-}*/
-////针对的是victim inputs没有partner的情况, 获取traditional compaction 
-void VersionSet::GetMergedTIterator(Compaction* c, 
-        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist) {
-    ReadOptions options;
+////针对的是victim inputs没有partner的情况, 获取traditional compaction      
+void VersionSet::MergeTSplitCompaction(Compaction* c, 
+						   std::vector<SplitCompaction*>& t_sptcompactions,
+						   std::vector<TSplitCompaction*>& result) {
+	ReadOptions options;
     options.verify_checksums = options_->paranoid_checks;
     options.fill_cache = false;
-    int count = 1;
-    auto prepair = tcompactionlist[0];
-   
+	int count = 1;
+	
     const std::vector<FileMetaData*>& files0 = c->inputs_[0];
     const std::vector<FileMetaData*>& files1 = c->inputs_[1];
-    std::vector<std::pair<int, std::vector<OverlapVictim*>>> onetcompaction; 
-    onetcompaction.push_back(tcompactionlist[0]);
-   
-    InternalKey victimstart_key, victimend_key;
+	int sz = t_sptcompactions.size();
+	
+	DEBUG_T("traditional compaction:\n");
+	InternalKey victimstart_key, victimend_key;
     bool containsend;
-    Iterator *iter0, *iter1;
     
-    DEBUG_T("traditional compaction:\n");
-    for(int i = 1; i <= tcompactionlist.size(); i++) {
-        if(((i == tcompactionlist.size()) ||
-            tcompactionlist[i].first - prepair.first > 1) && count > 1) {
-            std::vector<OverlapVictim*> victims;
-            std::vector<FileMetaData*> fmds;
-            int previctim, iter0count = 0;
-            int tsize = onetcompaction.size();
-            int victimstart_index, victimend_index;
-
-            victimstart_index = (onetcompaction[0].second)[0]->victim_index;
-            victimstart_key = (onetcompaction[0].second)[0]->overlapstart;
-            
-            std::vector<OverlapVictim*> endoverlaps = 
-                                onetcompaction[tsize - 1].second;
-            int endsz = endoverlaps.size();
-            victimend_index = endoverlaps[endsz - 1]->victim_index;
-            victimend_key = endoverlaps[endsz - 1]->overlapend;
-            containsend = endoverlaps[endsz - 1]->containsend;
-            
-            int itersz = victimend_index - victimstart_index + 1;
-            Iterator** list = new Iterator*[itersz];
-            int num = 0;
-           
-            DEBUG_T("victim index from %d~%d, key from %s~%s, containsend:%d\n", 
-                    victimstart_index, victimend_index,
-                    victimstart_key.user_key().ToString().c_str(),
-                    victimend_key.user_key().ToString().c_str(),
-                    containsend? 1: 0);
-
-            for(int k = victimstart_index; k <= victimend_index; k++) {
-                list[num++] = table_cache_->NewIterator(options, 
-                           files0[k]->number, 
-                           files0[k]->file_size);
-            }
-            iter0 = NewMergingIterator(&icmp_, list, itersz);
-
-            
-            DEBUG_T("files1 index from %d~%d\n", 
-                    onetcompaction[0].first,
-                    onetcompaction[tsize - 1].first);
-            for(int j = 0; j < tsize; j++) {
-                fmds.push_back(files1[onetcompaction[j].first]);
-            } 
-            iter1 = NewTwoLevelIterator(
-                    new Version::LevelFileNumIterator(icmp_, &fmds),
-                    &GetFileIterator, table_cache_, options); 
-        
-            onetcompaction.clear();
-            if(i < tcompactionlist.size())
-                onetcompaction.push_back(tcompactionlist[i]);
-            count = 1;
-        } else if((i == tcompactionlist.size()) ||
-                tcompactionlist[i].first - prepair.first > 1){
-           std::vector<OverlapVictim*>& victims = prepair.second;
-           int victimsz = victims.size();
-           if(victimsz == 1) {
-               iter0 = table_cache_->NewIterator(options, 
-                    files0[victims[0]->victim_index]->number,
-                    files0[victims[0]->victim_index]->file_size); 
-           }
-           else {
-               Iterator** list = new Iterator*[victims.size()];
-               for(int j = 0; j < victims.size(); j++) {
-                   list[j] = table_cache_->NewIterator(options, 
-                           files0[victims[j]->victim_index]->number, 
-                           files0[victims[j]->victim_index]->file_size);
-               }
-               iter0 = NewMergingIterator(&icmp_, list, victims.size());
-           }
-               
-           victimstart_key = victims[0]->overlapstart;
-           victimend_key = victims[victimsz - 1]->overlapend;
-           containsend = victims[victimsz - 1]->containsend;
-          
-           DEBUG_T("victim index from %d~%d, key from %s~%s, containsend:%d\n", 
-                    victims[0]->victim_index, 
-                    victims[victimsz - 1]->victim_index,
-                    victimstart_key.user_key().ToString().c_str(),
-                    victimend_key.user_key().ToString().c_str(),
-                    containsend? 1: 0);
-
-           iter1 =  table_cache_->NewIterator(options, 
-                   files1[prepair.first]->number, 
-                   files1[prepair.first]->file_size);
-
-           DEBUG_T("files1 index is:%d\n", prepair.first);
-           onetcompaction.clear();
-           if(i < tcompactionlist.size())
-               onetcompaction.push_back(tcompactionlist[i]);
-           count = 1;
-        } else {
-            onetcompaction.push_back(tcompactionlist[i]);
-            count++;
+	SplitCompaction* pre = t_sptcompactions[0];
+	TSplitCompaction* t_sptcompaction = new TSplitCompaction;
+	t_sptcompaction->inputs1_indexs.push_back(pre->inputs1_index);
+	
+	std::vector<SplitCompaction*> tmpt_sptcompactions;
+	tmpt_sptcompactions.push_back(t_sptcompactions[0]);
+	for(int i = 1; i <= sz; i++) {
+        if(((i == t_sptcompactions.size()) ||
+			t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1) 
+				&& count > 1) {
+			int tmpt_sz = tmpt_sptcompactions.size();
+			t_sptcompaction->victims.push_back(tmpt_sptcompactions[0]->victims[0]);
+			t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
+			
+			int victimsz = tmpt_sptcompactions[tmpt_sz - 1]->victims.size();
+			t_sptcompaction->victims.push_back(
+							tmpt_sptcompactions[tmpt_sz - 1]->victims[victimsz - 1]);
+			t_sptcompaction->victim_end = tmpt_sptcompactions[tmpt_sz - 1]->victim_end;
+			t_sptcompaction->containsend = tmpt_sptcompactions[tmpt_sz - 1]->containsend;
+			
+			result.push_back(t_sptcompaction);		
+			TSplitCompaction* t_sptcompaction = new TSplitCompaction;
+			t_sptcompaction->inputs1_indexs.push_back(
+						t_sptcompactions[i]->inputs1_index);
+			
+			tmpt_sptcompactions.clear();
+			if(i < t_sptcompactions.size()){
+				pre = t_sptcompactions[i];
+				tmpt_sptcompactions.push_back(t_sptcompactions[i]);
+			}
+			count = 1;
+        } else if(((i == t_sptcompactions.size()) ||
+				   t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1)) {
+			t_sptcompaction->victims = tmpt_sptcompactions[0]->victims;
+			t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
+			t_sptcompaction->victim_end = tmpt_sptcompactions[0]->victim_end;
+			t_sptcompaction->containsend = tmpt_sptcompactions[0]->containsend;
+			
+			result.push_back(t_sptcompaction);		
+			TSplitCompaction* t_sptcompaction = new TSplitCompaction;
+			t_sptcompaction->inputs1_indexs.push_back(
+				t_sptcompactions[i]->inputs1_index);
+			
+			tmpt_sptcompactions.clear();
+			if(i < t_sptcompactions.size()){
+				pre = t_sptcompactions[i];
+				tmpt_sptcompactions.push_back(t_sptcompactions[i]);
+			}
+			count = 1;								   
+		} else {
+            t_sptcompaction->inputs1_indexs.push_back(
+				t_sptcompactions[i]->inputs1_index);
+			pre = t_sptcompactions[i];
+			tmpt_sptcompactions.push_back(t_sptcompactions[i]);
+			count++;
         }
-        if(i < tcompactionlist.size())
-            prepair = tcompactionlist[i];
     }
-}        
+}
 
-////针对的是victim inputs没有partner， 而且level + 1中也没有partner的情况,
-//获取重叠比例，以及victim
-void VersionSet::GetCompactionType(Compaction* c,
-            std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
-            std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist) {
-    assert(c->level() > 0);
-    DEBUG_T("\n\n-----------------printoverlap-------------\n");
-    DEBUG_T("level:%d, inputs_[0]:size:%d\n", c->level(), c->inputs_[0].size());
+bool VersionSet::HasPartnerInVictim(Compaction* c) {
+	std::vector<FileMetaData*>& inputs0 = c->inputs_[0];
+	int sz0 = inputs0.size();
+	for(int i = 0; i < sz0; i++) {
+		if(!inputs0[i]->partners.empty())
+			return true;
+	}
+	return false;
+}
 
-    std::vector<FileMetaData*>& inputs1 = c->inputs_[0];
-    std::vector<FileMetaData*>& inputs2 = c->inputs_[1];
+double VersionSet::GetOverlappingRatio(Compaction* c, 
+								SplitCompaction* sptcompaction) {
+	std::vector<FileMetaData*>& inputs0 = c->inputs_[0];
+    std::vector<FileMetaData*>& inputs1 = c->inputs_[1];
+    int sz0 = inputs0.size();
     int sz1 = inputs1.size();
-    int sz2 = inputs2.size();
-
-    DEBUG_T("inputs1 info:\n");
-    for(int i = 0; i < sz1; i++) {
-        DEBUG_T("filenumber:%lld, smallest%s, largest:%s\n",
-                inputs1[i]->number, 
-                inputs1[i]->smallest.user_key().ToString().c_str(),
-                inputs1[i]->largest.user_key().ToString().c_str());
-    }
-    
-    DEBUG_T("inputs2 info:\n");
-    for(int j = 0; j < sz2; j++) {
-        DEBUG_T("filenumber:%lld, smallest%s, largest:%s\n",
-                inputs2[j]->number, 
-                inputs2[j]->smallest.user_key().ToString().c_str(),
-                inputs2[j]->largest.user_key().ToString().c_str());
-    }
-
-    Table* tableptr = nullptr;
+	
+	std::vector<int> victims = sptcompaction->victims;
+	int sz = victims.size();
+	
+	Table* tableptr = nullptr;
     Iterator* iter;
-    double ratio;
-    
-    if(sz2 == 0) {
-        return;
-    }
-    
-    std::vector<InternalKey> points;
-    for(int i = 0; i < sz2; i++) {
-        points.push_back(inputs2[i]->smallest);
-        points.push_back(inputs2[i]->largest);
-    }
-    
-    std::vector<std::pair<uint64_t, int>> result;
-
-    int i = 0, j = 0;
-    iter = table_cache_->NewIterator(ReadOptions(), 
-                                inputs1[j]->number,
-                                inputs1[j]->file_size,
-                                &tableptr);
-    for(; i < sz2 * 2; i++) {
-        if(icmp_.Compare(points[i], inputs1[j]->smallest) < 0) {
-            result.push_back(std::make_pair(0, j));
-            continue;
-        } else if(icmp_.Compare(points[i], inputs1[j]->largest) > 0) { 
-            if (j < (sz1 - 1)) {
-                while(icmp_.Compare(points[i], 
-                            inputs1[j]->largest) > 0 && j < (sz1 - 1)){
-                    j++;
-                    delete iter;
-                    iter = table_cache_->NewIterator(ReadOptions(), 
-                                inputs1[j]->number,
-                                inputs1[j]->file_size,
-                                &tableptr);    
-                }
-                if(icmp_.Compare(points[i], inputs1[j]->largest) > 0) {
-                    result.push_back(std::make_pair(inputs1[j]->file_size, j));
-                    continue;
-                }
-            } else {
-                result.push_back(std::make_pair(inputs1[j]->file_size, j));
-                continue;     
-            }
-        } 
-           
-        uint64_t offset = tableptr->ApproximateOffsetOf(points[i].Encode());
-        //DEBUG_T("offset:%lld\n", offset);
-        result.push_back(std::make_pair(offset, j));
-    }
-    //DEBUG_T("last sstable overlap end in inputs1[%d]\n", j);
-
-    delete iter;
-
-    uint64_t overlapsize = 0;
-    for(i = 0; i < result.size(); i = i + 2) {
-        std::pair<uint64_t, int> left = result[i];
-        std::pair<uint64_t, int> right = result[i + 1];
-        std::vector<OverlapVictim*> victims;
-        //DEBUG_T("left.first:%lld, left.second:%d,right.first:%d, right.second:%d\n", left.first, left.second, right.first, right.second);
-        if(left.second != right.second) {
-            //DEBUG_T("have two overlap victim\n");
-            ///first overlap victim  
-            OverlapVictim* victim_start = new OverlapVictim;
-            OverlapVictim* victim_mid = new OverlapVictim;
-            OverlapVictim* victim_end = new OverlapVictim;
-            victim_start->victim_index = left.second;
-            victim_start->overlapstart = (icmp_.Compare(inputs1[left.second]->smallest, 
-                        inputs2[i/2]->smallest) > 0)? inputs1[left.second]->smallest: 
-                        inputs2[i/2]->smallest;
-            //包括这个最大值
-            victim_start->overlapend = inputs1[left.second]->largest;
-            victim_start->containsend = true;
-            victims.push_back(victim_start);
-           
-            //DEBUG_T("after get first overlap victim\n");
-            //DEBUG_T("left.second:%d, right.second:%d\n",
-             //       left.second, right.second);
-            ///mid overlap victims 
-            uint64_t MidOverlapped = 0;
-            int mid = left.second + 1;
-            while(mid < right.second) {
-               DEBUG_T("have more than two overlap victim\n");
-               victim_mid->victim_index = mid;
-               victim_mid->overlapstart = inputs1[mid]->smallest;
-               victim_mid->overlapend = inputs1[mid]->largest;
-               victim_mid->containsend = true;
-               victims.push_back(victim_mid);
-               victim_mid = new OverlapVictim;        
-    
-               MidOverlapped +=  inputs1[mid]->file_size;
-               mid++;
-            }
-            //DEBUG_T("after get mid overlap victim\n");
-
-            //last overlap victim 
-            ////边界值如何考虑呢
-            victim_end->victim_index = right.second;
-            victim_end->overlapstart = inputs1[right.second]->smallest;
-            //DEBUG_T("i:%d, inputs2.size:%d, result.size:%d\n", 
-              //      i, inputs2.size(), result.size());
-            victim_end->overlapend = ((i + 2) < result.size() && 
-                    icmp_.Compare(inputs2[(i + 2) / 2]->smallest, 
-                        inputs1[right.second]->largest) < 0)? 
-                        inputs2[(i + 2) / 2]->smallest:
-                        inputs1[right.second]->largest;
-            
-            if((i + 2 < result.size()) &&
-                    icmp_.Compare(victim_end->overlapend, 
-                        inputs2[(i + 2) / 2]->smallest) == 0)
-                victim_end->containsend = false;
-            else 
-                victim_end->containsend = true;
-            victims.push_back(victim_end);
-            //DEBUG_T("after get end overlap victim\n");
-
-            //get overlap ratio 
-            overlapsize = inputs1[left.second]->file_size - 
-                        left.first + MidOverlapped + right.first;
-            ratio = (overlapsize * 1.0) / inputs2[i/2]->file_size;
-            DEBUG_T("sz:%lld, ro:%lf;\n", inputs2[i/2]->file_size, ratio);
-            
-            if(ratio < PCompactionThresh)
-                pcompactionlist.push_back(std::make_pair(i/2, victims));
-            else 
-                tcompactionlist.push_back(std::make_pair(i/2, victims));
-        } else {
-            ///overlap victim 
-            //DEBUG_T("have only one overlap victim,");
-            OverlapVictim* victim = new OverlapVictim;
-            victim->victim_index = left.second;
-            victim->overlapstart = (icmp_.Compare(inputs1[left.second]->smallest, 
-                        inputs2[i/2]->smallest) > 0)?inputs1[left.second]->smallest:
-                        inputs2[i/2]->smallest;
-            victim->overlapend = ((i + 2) < result.size() && 
-                    icmp_.Compare(inputs1[right.second]->largest, 
-                        inputs2[(i + 2)/2]->smallest) > 0)?
-                        inputs2[(i + 2)/2]->smallest:
-                        inputs1[right.second]->largest; 
-            if((i + 2 < result.size()) &&
-                icmp_.Compare(victim->overlapend, 
-                        inputs2[(i+2)/2]->smallest) == 0)
-                victim->containsend = false;
-            else 
-                victim->containsend = true;
-            victims.push_back(victim);
-
-            overlapsize = right.first - left.first;
-            ratio = (overlapsize * 1.0) / inputs2[i/2]->file_size;
-            DEBUG_T("sz:%lld, ro:%lf;\n", inputs2[i/2]->file_size, ratio);
-
-            if(ratio < PCompactionThresh)
-                pcompactionlist.push_back(std::make_pair(i/2, victims));
-            else 
-                tcompactionlist.push_back(std::make_pair(i/2, victims));
-        }
-    }
+	
+	int inputs1_index = sptcompaction->inputs1_index;
+	
+	InternalKey smallest, largest;
+	smallest = inputs1[inputs1_index]->smallest;
+	largest = inputs1[inputs1_index]->largest;
+	
+	uint64_t overlapsz;
+			  
+	if(sz > 1) {
+		int victimstart_index = victims[0];
+		int victimend_index = victims[1];
+		uint64_t midoverlapsz = 0, offset_start, offset_end;
+		iter = table_cache_->NewIterator(ReadOptions(), 
+										 inputs0[victimstart_index]->number,
+										 inputs0[victimstart_index]->file_size,
+										 &tableptr); 
+		DEBUG_T("to get origin_smallest, while smallest:%s\n", smallest.user_key().ToString().c_str());
+		if(icmp_.Compare(smallest, 
+						 inputs0[victimstart_index]->origin_smallest) < 0)
+			offset_start = 0;
+		else {
+			offset_start = tableptr->ApproximateOffsetOf(smallest.Encode());
+		}
+		delete iter;
+		DEBUG_T("after get origin_smallest:\n");
+		int i = victimstart_index + 1;
+		while(i < victimend_index) {
+			midoverlapsz += inputs0[i]->file_size;
+			i++;
+		}
+		
+		iter = table_cache_->NewIterator(ReadOptions(), 
+										 inputs0[victimend_index]->number,
+										 inputs0[victimend_index]->file_size,
+										 &tableptr); 
+		if(icmp_.Compare(largest, 
+						 inputs0[victimend_index]->origin_largest) > 0)
+			offset_end = inputs0[victimend_index]->file_size;
+		else {
+			offset_end = tableptr->ApproximateOffsetOf(largest.Encode());
+		}
+		delete iter;
+		
+		overlapsz = inputs0[victimstart_index]->file_size - offset_start + 
+					midoverlapsz + offset_end;
+	} else {
+		int victim_index = victims[0];
+		iter = table_cache_->NewIterator(ReadOptions(), 
+									inputs0[victim_index]->number,
+									inputs0[victim_index]->file_size,
+									&tableptr); 
+		uint64_t offset_start, offset_end;
+		if(icmp_.Compare(smallest, 
+						 inputs0[victim_index]->origin_smallest) < 0)
+			offset_start = 0;
+		else {
+			offset_start = tableptr->ApproximateOffsetOf(smallest.Encode());
+		}
+		
+		if(icmp_.Compare(largest, 
+						 inputs0[victim_index]->origin_largest) > 0)
+			offset_end = inputs0[victim_index]->file_size;
+		else {
+			offset_end = tableptr->ApproximateOffsetOf(largest.Encode());
+		}
+		overlapsz = offset_end - offset_start;
+		
+		delete iter;
+	}
+	
+	return (overlapsz  + 1.0) / inputs1[inputs1_index]->file_size;
 }
 
 void VersionSet::PrintSplitCompaction(SplitCompaction* sptcompaction) {
@@ -1501,13 +1343,16 @@ void VersionSet::PrintSplitCompaction(SplitCompaction* sptcompaction) {
             sptcompaction->containsend? 1: 0);
 }
 
-void VersionSet::GetSplitCompactions(Compaction* c) {
+void VersionSet::GetSplitCompactions(Compaction* c, 
+						std::vector<TSplitCompaction*>& t_sptcompactions,
+						std::vector<SplitCompaction*>& p_sptcompactions) {
     assert(c->level() > 0);
     std::vector<FileMetaData*>& inputs0 = c->inputs_[0];
     std::vector<FileMetaData*>& inputs1 = c->inputs_[1];
     int sz0 = inputs0.size();
     int sz1 = inputs1.size();
-   
+	std::vector<SplitCompaction*> tmpt_sptcompactions;
+	
     DEBUG_T("---------------in SplitCompaction----------------\n");
     DEBUG_T("inputs0 info:\n");
     for(int i = 0; i < sz0; i++) {
@@ -1526,9 +1371,9 @@ void VersionSet::GetSplitCompactions(Compaction* c) {
     }
 
     int i = 0, j = 0;
-    std::vector<SplitCompaction*> sptcompactions;
     for(; i < sz1; i++) {
         SplitCompaction* sptcompaction =  new SplitCompaction;
+		std::set<int> victims;
         //inputs1的sstable的最小值是否小于inputs0当前的sstable的最大值， 
         //inputs1的sstable的最大值是否大于inputs0下一个的sstable的最小值，如果是的，那结束的位置就是当前的sstable,
         //并且compaction的范围需要选定，
@@ -1536,7 +1381,7 @@ void VersionSet::GetSplitCompactions(Compaction* c) {
                         inputs0[j]->largest) > 0) {
             j++;
         }
-        sptcompaction->victims.insert(j);
+        victims.insert(j);
         sptcompaction->victim_start = (icmp_.Compare(inputs0[j]->smallest, 
                             inputs1[i]->smallest) > 0)? inputs0[j]->smallest: 
                             inputs1[i]->smallest;
@@ -1544,7 +1389,7 @@ void VersionSet::GetSplitCompactions(Compaction* c) {
             inputs0[j + 1]->smallest) >= 0) {
             j++;
         }
-        sptcompaction->victims.insert(j);
+        victims.insert(j);
         //选小的
         sptcompaction->victim_end = ((i + 1 < sz1) && 
             icmp_.Compare(inputs0[j]->largest, 
@@ -1555,12 +1400,35 @@ void VersionSet::GetSplitCompactions(Compaction* c) {
             sptcompaction->containsend = false;
         else 
             sptcompaction->containsend = true;
+		
+		for(auto iter = victims.begin(); iter != victims.end(); iter++) 
+			sptcompaction->victims.push_back(*iter);
+        sptcompaction->inputs1_index = i;
 
         DEBUG_T("inputs1[%d], sptcompaction:", i);
         PrintSplitCompaction(sptcompaction);
-        
-        sptcompactions.push_back(sptcompaction);
+       
+        if(inputs1[i]->partners.size() != 0)
+            tmpt_sptcompactions.push_back(sptcompaction);
+        else {
+            double ratio = GetOverlappingRatio(c, sptcompaction);
+			DEBUG_T("ratio:%lf\n", ratio);
+            if(ratio < PCompactionThresh)
+                p_sptcompactions.push_back(sptcompaction);
+            else 
+                tmpt_sptcompactions.push_back(sptcompaction);
+        } 
     }
+	if(tmpt_sptcompactions.size() > 1)
+		MergeTSplitCompaction(c, tmpt_sptcompactions, t_sptcompactions);
+	else {
+		TSplitCompaction* t_sptcompaction = new TSplitCompaction;
+		t_sptcompaction->victims = tmpt_sptcompactions[0]->victims;
+		t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
+		t_sptcompaction->victim_end = tmpt_sptcompactions[0]->victim_end;
+		t_sptcompaction->containsend = tmpt_sptcompactions[0]->containsend;
+		t_sptcompactions.push_back(t_sptcompaction);
+	}
     DEBUG_T("---------------in SplitCompaction----------------\n");
 }
 ////////////////////meggie

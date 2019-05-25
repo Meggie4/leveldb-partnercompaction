@@ -49,10 +49,19 @@ struct OverlapVictim {
 };
 
 struct SplitCompaction {
-    std::set<int> victims;
+    std::vector<int> victims;
     InternalKey victim_start;
     InternalKey victim_end;
     bool containsend;
+    int inputs1_index;
+};
+
+struct TSplitCompaction {
+	std::vector<int> victims;
+	InternalKey victim_start;
+	InternalKey victim_end;
+	bool containsend;
+	std::vector<int> inputs1_indexs;
 };
 //////////////meggie
 
@@ -282,7 +291,14 @@ class VersionSet {
   void GetMergedTIterator(Compaction* c, 
         std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
   void PrintSplitCompaction(SplitCompaction* sptcompaction);
-  void GetSplitCompactions(Compaction* c);
+  void GetSplitCompactions(Compaction* c, 
+						std::vector<TSplitCompaction*>& t_sptcompactions,
+						std::vector<SplitCompaction*>& p_sptcompactions);
+  double GetOverlappingRatio(Compaction* c, SplitCompaction* sptcompaction);
+  bool HasPartnerInVictim(Compaction* c);
+  void MergeTSplitCompaction(Compaction* c, 
+							std::vector<SplitCompaction*>& t_sptcompactions,
+							std::vector<TSplitCompaction*>& result);
   ////////////////meggie
 
   // Return the approximate offset in the database of the data for

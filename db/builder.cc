@@ -41,7 +41,7 @@ Status BuildTable(const std::string& dbname,
       meta->largest.DecodeFrom(key);
       builder->Add(key, iter->value());
     }
-
+	
     // Finish and check for builder errors
     s = builder->Finish();
     if (s.ok()) {

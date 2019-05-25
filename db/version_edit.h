@@ -32,8 +32,8 @@ struct FileMetaData {
   InternalKey largest;        // Largest internal key served by table
 
   //////////////meggie 
-  InternalKey global_smallest;
-  InternalKey global_largest;
+  InternalKey origin_smallest;
+  InternalKey origin_largest;
   std::vector<Partner> partners;
   //////////////meggie
   FileMetaData() : refs(0), allowed_seeks(1 << 30), file_size(0) { }
@@ -83,6 +83,10 @@ class VersionEdit {
     f.file_size = file_size;
     f.smallest = smallest;
     f.largest = largest;
+	/////////////meggie
+	f.origin_smallest = smallest;
+    f.origin_largest = largest;
+	/////////////meggie
     new_files_.push_back(std::make_pair(level, f));
   }
 

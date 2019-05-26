@@ -41,27 +41,40 @@ class VersionSet;
 class WritableFile;
 
 //////////////meggie
-struct OverlapVictim {
-    int victim_index;
-    InternalKey overlapstart;
-    InternalKey overlapend;
-    bool containsend;
-};
-
 struct SplitCompaction {
     std::vector<int> victims;
+	Iterator* victim_iter;
     InternalKey victim_start;
     InternalKey victim_end;
     bool containsend;
     int inputs1_index;
+	Iterator* inputs1_iter;
+	
+	SplitCompaction():
+		victim_iter(nullptr) {}
+
+	~SplitCompaction() {
+		if(victim_iter)
+			delete victim_iter;
+	}
 };
 
 struct TSplitCompaction {
-	std::vector<int> victims;
+	Iterator* victim_iter;
 	InternalKey victim_start;
 	InternalKey victim_end;
 	bool containsend;
-	std::vector<int> inputs1_indexs;
+	Iterator* inputs1_iter;
+	
+	TSplitCompaction(): victim_iter(nullptr),
+			inputs1_iter(nullptr){}
+	
+	~TSplitCompaction() {
+		if(victim_iter)
+			delete victim_iter;
+		if(inputs1_iter)
+			delete inputs1_iter;
+	}
 };
 //////////////meggie
 
@@ -146,6 +159,9 @@ class Version {
   friend class VersionSet;
 
   class LevelFileNumIterator;
+  ///////////meggie
+  class LevelFileNumIteratorWithPartner;
+  ///////////meggie
   Iterator* NewConcatenatingIterator(const ReadOptions&, int level) const;
 
   // Call func(arg, level, f) for every file that overlaps user_key in
@@ -285,20 +301,19 @@ class VersionSet {
   // May also mutate some internal state.
   void AddLiveFiles(std::set<uint64_t>* live);
   ////////////////meggie
-  void GetCompactionType(Compaction* c,
-            std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
-            std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
-  void GetMergedTIterator(Compaction* c, 
-        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
+  const InternalKeyComparator icmp_;
   void PrintSplitCompaction(SplitCompaction* sptcompaction);
   void GetSplitCompactions(Compaction* c, 
-						std::vector<TSplitCompaction*>& t_sptcompactions,
+						std::vector<SplitCompaction*>& t_sptcompactions,
 						std::vector<SplitCompaction*>& p_sptcompactions);
   double GetOverlappingRatio(Compaction* c, SplitCompaction* sptcompaction);
   bool HasPartnerInVictim(Compaction* c);
   void MergeTSplitCompaction(Compaction* c, 
 							std::vector<SplitCompaction*>& t_sptcompactions,
 							std::vector<TSplitCompaction*>& result);
+  Iterator* NewIteratorWithPartner(TableCache* cache, const FileMetaData* file);
+  Iterator* GetIteratorWithPartner(const std::vector<FileMetaData*>& files,
+							int start_index, int end_index);
   ////////////////meggie
 
   // Return the approximate offset in the database of the data for
@@ -342,7 +357,9 @@ class VersionSet {
   const std::string dbname_;
   const Options* const options_;
   TableCache* const table_cache_;
-  const InternalKeyComparator icmp_;
+  ////////////meggie
+  //nst InternalKeyComparator icmp_;
+  /////////////meggie
   uint64_t next_file_number_;
   uint64_t manifest_file_number_;
   uint64_t last_sequence_;

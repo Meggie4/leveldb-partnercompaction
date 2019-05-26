@@ -226,6 +226,140 @@ static Iterator* GetFileIterator(void* arg,
   }
 }
 
+////////////////////////meggie
+int FindFileWithPartner(const InternalKeyComparator& icmp,
+             const std::vector<FileMetaData*>& files,
+             const Slice& key, int start_index, int end_index) {
+  uint32_t left = start_index;
+  uint32_t right = end_index;
+  while (left <= right) {
+    uint32_t mid = (left + right) / 2;
+    const FileMetaData* f = files[mid];
+    if (icmp.InternalKeyComparator::Compare(f->largest.Encode(), key) < 0) {
+      // Key at "mid.largest" is < "target".  Therefore all
+      // files at or before "mid" are uninteresting.
+      left = mid + 1;
+    } else {
+      // Key at "mid.largest" is >= "target".  Therefore all files
+      // after "mid" are uninteresting.
+      right = mid;
+    }
+  }
+  return right;
+}
+
+class Version::LevelFileNumIteratorWithPartner : public Iterator {
+public:
+	LevelFileNumIteratorWithPartner(const InternalKeyComparator& icmp,
+						 const std::vector<FileMetaData*>* flist,
+                         int start_index, int end_index)
+		: icmp_(icmp),
+		  flist_(flist),
+          index_(end_index),
+		  start_index_(start_index),
+          end_index_(end_index){        // Marks as invalid
+	}
+	virtual bool Valid() const {
+		return (index_ >= start_index_ &&  
+                index_ <= end_index_);
+	}
+	virtual void Seek(const Slice& target) {
+		index_ = FindFileWithPartner(icmp_, *flist_, 
+                target, start_index_, end_index_);
+	}
+	virtual void SeekToFirst() { index_ = start_index_; }
+	virtual void SeekToLast() {
+		index_ = end_index_;
+	}
+	virtual void Next() {
+		assert(Valid());
+		index_++;
+	}
+	virtual void Prev() {
+		assert(Valid());
+		if (index_ == start_index_) {
+			index_ = end_index_ + 1;  // Marks as invalid
+		} else {
+			index_--;
+		}
+	}
+	Slice key() const {
+		assert(Valid());
+		return (*flist_)[index_]->largest.Encode();
+	}
+	Slice value() const {
+		assert(Valid());
+		/////////////meggie
+		uintptr_t flist_ptr = reinterpret_cast<uintptr_t>((void*)flist_);
+		EncodeFixed64(value_buf_, flist_ptr);
+		EncodeFixed32(value_buf_, index_);
+		/////////////meggie
+		return Slice(value_buf_, sizeof(value_buf_));
+	}
+	virtual Status status() const { return Status::OK(); }
+private:
+	const InternalKeyComparator icmp_;
+	const std::vector<FileMetaData*>* const flist_;
+    /////////meggie
+	uint32_t index_;
+    uint32_t start_index_;
+    uint32_t end_index_;
+    /////////meggie
+
+	// Backing store for value().  Holds the file number and size.
+	/////////////meggie
+	mutable char value_buf_[12];
+	/////////////meggie
+};
+
+struct PartnerIteratorArg {
+	TableCache* cache;
+	VersionSet* vset;
+};
+		
+static Iterator* GetFileIteratorWithPartner(void* arg,
+                                 const ReadOptions& options,
+                                 const Slice& file_value) {
+	PartnerIteratorArg* args = reinterpret_cast<PartnerIteratorArg*>(arg);
+	TableCache* cache = args->cache;
+	VersionSet* vset = args->vset;
+	delete args;
+    if (file_value.size() != 12) {
+		return NewErrorIterator(
+				   Status::Corruption("FileReader invoked with unexpected value"));
+	} else {
+		uintptr_t flist_arg = DecodeFixed64(file_value.data());
+		const std::vector<FileMetaData*>* flist = (const std::vector<FileMetaData*>*)(
+					reinterpret_cast<void*>(flist_arg));
+		uint32_t index = DecodeFixed32(file_value.data() + 8);
+		FileMetaData* file = (*flist)[index];
+		
+		int sz = file->partners.size() + 1;
+		Iterator** list = new Iterator*[sz];
+		list[0] = cache->NewIterator(options, file->number, file->file_size);
+		for(int i = 0; i < sz - 1; i++) {
+			list[i + 1] = cache->NewIterator(options,
+								  file->partners[i].partner_number,
+								  file->partners[i].partner_size);
+		}
+		return NewMergingIterator(&vset->icmp_, list, sz);
+	}
+}
+
+Iterator* VersionSet::NewIteratorWithPartner(TableCache* cache, 
+        const FileMetaData* file) {
+    int sz = file->partners.size() + 1;
+    Iterator** list = new Iterator*[sz];
+    list[0] = cache->NewIterator(ReadOptions(), file->number, file->file_size);
+    for(int i = 0; i < sz - 1; i++) {
+        list[i + 1] = cache->NewIterator(ReadOptions(),
+                              file->partners[i].partner_number,
+                              file->partners[i].partner_size);
+    }
+    return NewMergingIterator(&icmp_, list, sz);
+}
+////////////////meggie
+
 Iterator* Version::NewConcatenatingIterator(const ReadOptions& options,
                                             int level) const {
   return NewTwoLevelIterator(
@@ -1159,81 +1293,93 @@ const char* VersionSet::LevelSummary(LevelSummaryStorage* scratch) const {
 
 ////////////////////meggie
 ////针对的是victim inputs没有partner的情况, 获取traditional compaction      
-void VersionSet::MergeTSplitCompaction(Compaction* c, 
-						   std::vector<SplitCompaction*>& t_sptcompactions,
-						   std::vector<TSplitCompaction*>& result) {
+Iterator* VersionSet::GetIteratorWithPartner(
+                    const std::vector<FileMetaData*>& files,
+					        int start_index, int end_index) {
 	ReadOptions options;
     options.verify_checksums = options_->paranoid_checks;
     options.fill_cache = false;
-	int count = 1;
+    PartnerIteratorArg* args = new PartnerIteratorArg;
+    args->cache = table_cache_;
+    args->vset = this;
+   
+    return NewTwoLevelIterator(new Version::LevelFileNumIteratorWithPartner(icmp_, &files, 
+							start_index, end_index), &GetFileIteratorWithPartner, 
+							args, options);
+}
+
+void VersionSet::MergeTSplitCompaction(Compaction* c, 
+					std::vector<SplitCompaction*>& t_sptcompactions,
+						std::vector<TSplitCompaction*>& result) {
 	
     const std::vector<FileMetaData*>& files0 = c->inputs_[0];
     const std::vector<FileMetaData*>& files1 = c->inputs_[1];
 	int sz = t_sptcompactions.size();
-	
-	DEBUG_T("traditional compaction:\n");
-	InternalKey victimstart_key, victimend_key;
     bool containsend;
+
+    if(sz == 1) {
+        TSplitCompaction* t_sptcompaction = new TSplitCompaction;
+		int inputs1_index = t_sptcompactions[0]->inputs1_index;
+        t_sptcompaction->victim_iter = t_sptcompactions[0]->victim_iter;
+		t_sptcompactions[0]->victim_iter = nullptr;
+        t_sptcompaction->victim_start = t_sptcompactions[0]->victim_start;
+        t_sptcompaction->victim_end = t_sptcompactions[0]->victim_end;
+        t_sptcompaction->containsend = t_sptcompactions[0]->containsend;
+        t_sptcompaction->inputs1_iter = NewIteratorWithPartner(
+											table_cache_, files1[inputs1_index]);
+        result.push_back(t_sptcompaction);
+        return;
+    }
     
-	SplitCompaction* pre = t_sptcompactions[0];
-	TSplitCompaction* t_sptcompaction = new TSplitCompaction;
-	t_sptcompaction->inputs1_indexs.push_back(pre->inputs1_index);
-	
 	std::vector<SplitCompaction*> tmpt_sptcompactions;
 	tmpt_sptcompactions.push_back(t_sptcompactions[0]);
-	for(int i = 1; i <= sz; i++) {
-        if(((i == t_sptcompactions.size()) ||
-			t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1) 
+	SplitCompaction* pre = t_sptcompactions[0];
+	int count = 1;
+	
+    TSplitCompaction* t_sptcompaction = new TSplitCompaction;
+	DEBUG_T("traditional compaction:\n");
+	
+    for(int i = 1; i <= sz; i++) {
+        if(((i == sz) ||
+				t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1) 
 				&& count > 1) {
-			int tmpt_sz = tmpt_sptcompactions.size();
-			t_sptcompaction->victims.push_back(tmpt_sptcompactions[0]->victims[0]);
+			Iterator* victim_iter, *inputs1_iter;
 			t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
+			t_sptcompaction->victim_end = tmpt_sptcompactions[count - 1]->victim_end;
+			t_sptcompaction->containsend = tmpt_sptcompactions[count - 1]->containsend;
 			
-			int victimsz = tmpt_sptcompactions[tmpt_sz - 1]->victims.size();
-			t_sptcompaction->victims.push_back(
-							tmpt_sptcompactions[tmpt_sz - 1]->victims[victimsz - 1]);
-			t_sptcompaction->victim_end = tmpt_sptcompactions[tmpt_sz - 1]->victim_end;
-			t_sptcompaction->containsend = tmpt_sptcompactions[tmpt_sz - 1]->containsend;
+			int victimstart_index = tmpt_sptcompactions[0]->victims[0];
+			int victimsz = tmpt_sptcompactions[count - 1]->victims.size();
+			int victimend_index = tmpt_sptcompactions[count - 1]->victims[victimsz - 1];
 			
-			result.push_back(t_sptcompaction);		
-			TSplitCompaction* t_sptcompaction = new TSplitCompaction;
-			t_sptcompaction->inputs1_indexs.push_back(
-						t_sptcompactions[i]->inputs1_index);
+			int inputs1start_index = tmpt_sptcompactions[0]->inputs1_index;
+			int inputs1end_index = tmpt_sptcompactions[count - 1]->inputs1_index;		
 			
-			tmpt_sptcompactions.clear();
-			if(i < t_sptcompactions.size()){
-				pre = t_sptcompactions[i];
+            DEBUG_T("inputs1 index from %d~%d\n", inputs1start_index, inputs1end_index);
+			inputs1_iter = GetIteratorWithPartner(files1, inputs1start_index, inputs1end_index);
+			
+            DEBUG_T("victims index from %d~%d\n", victimstart_index, victimend_index);
+			victim_iter = GetIteratorWithPartner(files0, victimstart_index, victimend_index);
+			
+			t_sptcompaction->victim_iter = victim_iter;
+			t_sptcompaction->inputs1_iter = inputs1_iter;
+			result.push_back(t_sptcompaction);
+
+			if(i < sz) {
+                tmpt_sptcompactions.clear();
+                t_sptcompaction = new TSplitCompaction;
 				tmpt_sptcompactions.push_back(t_sptcompactions[i]);
-			}
-			count = 1;
-        } else if(((i == t_sptcompactions.size()) ||
-				   t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1)) {
-			t_sptcompaction->victims = tmpt_sptcompactions[0]->victims;
-			t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
-			t_sptcompaction->victim_end = tmpt_sptcompactions[0]->victim_end;
-			t_sptcompaction->containsend = tmpt_sptcompactions[0]->containsend;
-			
-			result.push_back(t_sptcompaction);		
-			TSplitCompaction* t_sptcompaction = new TSplitCompaction;
-			t_sptcompaction->inputs1_indexs.push_back(
-				t_sptcompactions[i]->inputs1_index);
-			
-			tmpt_sptcompactions.clear();
-			if(i < t_sptcompactions.size()){
 				pre = t_sptcompactions[i];
-				tmpt_sptcompactions.push_back(t_sptcompactions[i]);
+			    count = 1;
 			}
-			count = 1;								   
 		} else {
-            t_sptcompaction->inputs1_indexs.push_back(
-				t_sptcompactions[i]->inputs1_index);
-			pre = t_sptcompactions[i];
 			tmpt_sptcompactions.push_back(t_sptcompactions[i]);
+			pre = t_sptcompactions[i];
 			count++;
         }
     }
 }
-
+ 
 bool VersionSet::HasPartnerInVictim(Compaction* c) {
 	std::vector<FileMetaData*>& inputs0 = c->inputs_[0];
 	int sz0 = inputs0.size();
@@ -1344,16 +1490,14 @@ void VersionSet::PrintSplitCompaction(SplitCompaction* sptcompaction) {
 }
 
 void VersionSet::GetSplitCompactions(Compaction* c, 
-						std::vector<TSplitCompaction*>& t_sptcompactions,
+						std::vector<SplitCompaction*>& t_sptcompactions,
 						std::vector<SplitCompaction*>& p_sptcompactions) {
     assert(c->level() > 0);
     std::vector<FileMetaData*>& inputs0 = c->inputs_[0];
     std::vector<FileMetaData*>& inputs1 = c->inputs_[1];
     int sz0 = inputs0.size();
     int sz1 = inputs1.size();
-	std::vector<SplitCompaction*> tmpt_sptcompactions;
 	
-    DEBUG_T("---------------in SplitCompaction----------------\n");
     DEBUG_T("inputs0 info:\n");
     for(int i = 0; i < sz0; i++) {
         DEBUG_T("filenumber:%lld, smallest%s, largest:%s\n",
@@ -1403,33 +1547,31 @@ void VersionSet::GetSplitCompactions(Compaction* c,
 		
 		for(auto iter = victims.begin(); iter != victims.end(); iter++) 
 			sptcompaction->victims.push_back(*iter);
+        
+        int victimsz = sptcompaction->victims.size();
+        int victimstart_index = sptcompaction->victims[0];
+        int victimend_index = sptcompaction->victims[victimsz - 1];
+		sptcompaction->victim_iter = 
+                GetIteratorWithPartner(inputs0, 
+                    victimstart_index, victimend_index); 
+        
         sptcompaction->inputs1_index = i;
 
         DEBUG_T("inputs1[%d], sptcompaction:", i);
         PrintSplitCompaction(sptcompaction);
        
         if(inputs1[i]->partners.size() != 0)
-            tmpt_sptcompactions.push_back(sptcompaction);
+            t_sptcompactions.push_back(sptcompaction);
         else {
             double ratio = GetOverlappingRatio(c, sptcompaction);
 			DEBUG_T("ratio:%lf\n", ratio);
-            if(ratio < PCompactionThresh)
+            if(ratio < PCompactionThresh){
                 p_sptcompactions.push_back(sptcompaction);
+			}
             else 
-                tmpt_sptcompactions.push_back(sptcompaction);
+                t_sptcompactions.push_back(sptcompaction);
         } 
     }
-	if(tmpt_sptcompactions.size() > 1)
-		MergeTSplitCompaction(c, tmpt_sptcompactions, t_sptcompactions);
-	else {
-		TSplitCompaction* t_sptcompaction = new TSplitCompaction;
-		t_sptcompaction->victims = tmpt_sptcompactions[0]->victims;
-		t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
-		t_sptcompaction->victim_end = tmpt_sptcompactions[0]->victim_end;
-		t_sptcompaction->containsend = tmpt_sptcompactions[0]->containsend;
-		t_sptcompactions.push_back(t_sptcompaction);
-	}
-    DEBUG_T("---------------in SplitCompaction----------------\n");
 }
 ////////////////////meggie
 

@@ -35,10 +35,11 @@
 #include "util/logging.h"
 #include "util/mutexlock.h"
 
+////////////meggie
 #include "util/debug.h"
 #include "util/timer.h"
+#include "util/threadpool.h"
 
-////////////meggie
 #ifdef TIMER_LOG
 	#define start_timer(s) timer->StartTimer(s)
 	#define record_timer(s) timer->Record(s)
@@ -169,6 +170,7 @@ DBImpl::DBImpl(const Options& raw_options, const std::string& dbname)
   has_imm_.Release_Store(nullptr);
   ///////////meggie
   timer = new Timer();
+  thpool_ = new ThreadPool(10);
   ///////////meggie
 }
 
@@ -194,6 +196,7 @@ DBImpl::~DBImpl() {
   delete table_cache_;
   ////////////meggie
   delete timer;
+  delete thpool_;
   ////////////meggie
 
   if (owns_info_log_) {
@@ -920,50 +923,89 @@ Status DBImpl::InstallCompactionResults(CompactionState* compact) {
   return versions_->LogAndApply(compact->compaction->edit(), &mutex_);
 }
 
-////////////////meggie 
-/*Status DBImpl::DoCompactionWorkByCondition(CompactionState* compact,
-        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
-        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist) {
-   //针对input_[1]中的SSTable是经过何种compaction 
-    DEBUG_T("pcompactionlist index: ");
-    for(int i = 0; i < pcompactionlist.size(); i++) {
-        auto pair = pcompactionlist[i];
-        DEBUG_T("%d, ", pair.first);
-    }
+////////////////meggie
+struct DBImpl::TraditionalCompactionArgs {
+    DBImpl* db;
+    CompactionState* compact;
+    TSplitCompaction* t_sptcompaction;
+};
 
-    DEBUG_T("\ntcompactionlist index: ");
-    for(int j = 0; j < tcompactionlist.size(); j++) {
-        auto pair = tcompactionlist[j];
-        DEBUG_T("%d, ", pair.first);
-    }
-    DEBUG_T("\n");
+struct DBImpl::PartnerCompactionArgs {
+    DBImpl* db;
+    CompactionState* compact;
+    SplitCompaction* p_sptcompaction;
+};
 
-    if(tcompactionlist.size() > 1)
-        versions_->GetMergedTIterator(compact->compaction,
-                        tcompactionlist);
-    DEBUG_T("-----------------printoverlap-------------\n\n");
-
-    
-    return Status::OK();
+void DBImpl::DoTraditionCompactionWork(void* args) {
+    TraditionalCompactionArgs* tcargs = 
+            reinterpret_cast<TraditionalCompactionArgs*>(args);
+    DBImpl* db = tcargs->db;
+    db->DealWithTraditionCompaction(tcargs->compact, 
+                        tcargs->t_sptcompaction);
 }
-*/
 
-/*Status DBImpl::DoSplitCompactionWork(CompactionState* compact,
+void DBImpl::DoPartnerCompactionWork(void* args) {
+    PartnerCompactionArgs* pcargs = 
+            reinterpret_cast<PartnerCompactionArgs*>(args);
+    DBImpl* db = pcargs->db;
+    db->DealWithPartnerCompaction(pcargs->compact, 
+                        pcargs->p_sptcompaction);
+}
+
+void DBImpl::DealWithTraditionCompaction(CompactionState* compact, 
+                        TSplitCompaction* t_sptcompaction) {
+	DEBUG_T("in DealWithTradintionCompaction\n");
+	DEBUG_T("victim_start:%s, victim_end:%s\n", 
+					t_sptcompaction->victim_start.user_key().ToString().c_str(),
+					t_sptcompaction->victim_end.user_key().ToString().c_str());
+}
+
+void DBImpl::DealWithPartnerCompaction(CompactionState* compact, 
+                            SplitCompaction* p_sptcompaction) {
+	DEBUG_T("in DealWithPartnerCompaction\n");
+	DEBUG_T("victim_start:%s, victim_end:%s\n", 
+			p_sptcompaction->victim_start.user_key().ToString().c_str(),
+			p_sptcompaction->victim_end.user_key().ToString().c_str());
+}
+
+Status DBImpl::DoSplitCompactionWork(CompactionState* compact,
 									 std::vector<SplitCompaction*>& t_sptcompactions,
 									 std::vector<SplitCompaction*>& p_sptcompactions) {
 	Compaction* c = compact->compaction;
-	bool partner_in_victims = versions_->HasPartnerInVictim(c);
-	if(partner_in_victims) {
-		DealSplitCompactionWithPartnerVictim(compact, 
-											t_sptcompactions,
-											p_sptcompactions);
-	} else {
-		if(t_sptcompactions)
-			DealTSplitCompaction(t_sptcompactions);
-		if(p_sptcompactions) 
-			DealPSplitCompaction(p_sptcompactions);
-	}
-}*/
+	std::vector<TSplitCompaction*> tcompactionlist; 
+	if(t_sptcompactions.size() > 0) {
+		versions_->MergeTSplitCompaction(c, t_sptcompactions, tcompactionlist);
+		for(int i = 0; i < t_sptcompactions.size(); i++) 
+			delete t_sptcompactions[i];
+        
+		for(int i = 0; i < tcompactionlist.size(); i++) {
+		   TraditionalCompactionArgs* tcargs = new TraditionalCompactionArgs;
+		   tcargs->db = this;
+		   tcargs->compact = compact;
+		   tcargs->t_sptcompaction = tcompactionlist[i];
+           thpool_->AddJob(DoTraditionCompactionWork, tcargs); 
+        }
+    }
+
+	if(p_sptcompactions.size() > 0) {
+        for(int i = 0; i < p_sptcompactions.size(); i++) {
+		   PartnerCompactionArgs* pcargs = new PartnerCompactionArgs;
+		   pcargs->db = this;
+		   pcargs->compact = compact;
+		   pcargs->p_sptcompaction = p_sptcompactions[i];
+           thpool_->AddJob(DoPartnerCompactionWork,	pcargs);
+        }
+    }
+    thpool_->WaitAll();
+	
+	for(int i = 0; i < tcompactionlist.size(); i++) 
+		delete tcompactionlist[i];
+	
+	for(int i = 0; i < p_sptcompactions.size(); i++) 
+		delete p_sptcompactions[i];
+	
+	return Status::OK();
+}
 ////////////////meggie
 
 
@@ -980,15 +1022,16 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   /////////////meggie
   if(compact->compaction->level() > 0) {
-      std::vector<TSplitCompaction*> t_sptcompactions;
+      std::vector<SplitCompaction*> t_sptcompactions;
       std::vector<SplitCompaction*> p_sptcompactions;
       start_timer(COMPUTE_OVERLLAP); 
+	  DEBUG_T("---------------in SplitCompaction----------------\n");
       versions_->GetSplitCompactions(compact->compaction, 
 									 t_sptcompactions,
 									 p_sptcompactions);
+	  DoSplitCompactionWork(compact, t_sptcompactions, p_sptcompactions);
+	  DEBUG_T("---------------in SplitCompaction----------------\n\n");
       record_timer(COMPUTE_OVERLLAP);
-      //return DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
-      //DoCompactionWorkByCondition(compact, pcompactionlist, tcompactionlist);
   }
   /////////////meggie
 

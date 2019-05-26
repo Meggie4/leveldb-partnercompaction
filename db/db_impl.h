@@ -27,7 +27,9 @@ class Version;
 class VersionEdit;
 class VersionSet;
 //////////meggie
-struct OverlapVictim;
+class ThreadPool;
+class SplitCompaction;
+class TSplitCompaction;
 //////////meggie
 
 class DBImpl : public DB {
@@ -74,6 +76,10 @@ class DBImpl : public DB {
  private:
   friend class DB;
   struct CompactionState;
+  //////////////meggie
+  struct TraditionalCompactionArgs;
+  struct PartnerCompactionArgs;
+  /////////////meggie
   struct Writer;
 
   Iterator* NewInternalIterator(const ReadOptions&,
@@ -122,9 +128,15 @@ class DBImpl : public DB {
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   ///////////////meggie
-  Status DoCompactionWorkByCondition(CompactionState* compact,
-        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& pcompactionlist,
-        std::vector<std::pair<int, std::vector<OverlapVictim*>>>& tcompactionlist);
+  Status DoSplitCompactionWork(CompactionState* compact,
+					std::vector<SplitCompaction*>& t_sptcompactions,
+					std::vector<SplitCompaction*>& p_sptcompactions);
+  static void DoTraditionCompactionWork(void* args);
+  static void DoPartnerCompactionWork(void* args);
+  void DealWithTraditionCompaction(CompactionState* compact, 
+                        TSplitCompaction* t_sptcompaction);
+  void DealWithPartnerCompaction(CompactionState* compact, 
+                            SplitCompaction* p_sptcompaction);
   ///////////////meggie
 
   Status OpenCompactionOutputFile(CompactionState* compact);
@@ -206,6 +218,7 @@ class DBImpl : public DB {
 
   /////////////meggie
   Timer* timer;
+  ThreadPool* thpool_;
   virtual void PrintTimerAudit();
   /////////////meggie
   // No copying allowed

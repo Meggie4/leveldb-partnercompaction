@@ -982,17 +982,20 @@ bool DBImpl::ValidAndInRange(Iterator* iter, InternalKey end,
         DEBUG_T("victim_iter is not Valid\n");
         return false;
     }
+    DEBUG_T("ValidAndInRange is Valid\n");
     Slice key = iter->key();
     if(!ParseInternalKey(key, ikey_victim)){
-        DEBUG_T("victim_iter is not Valid\n");
+        DEBUG_T("ParsedInternalKey failed\n");
         return false;
     }
-
+    DEBUG_T("ikey_victim user_key :%s\n",
+            ikey_victim->user_key.ToString().c_str());
+    DEBUG_T("end user_key:%s\n", end.user_key().ToString().c_str());
     if((containsend &&  user_comparator()->Compare(ikey_victim->user_key, 
                 end.user_key()) > 0) || (!containsend && 
             user_comparator()->Compare(ikey_victim->user_key, end.user_key()) >= 0)){
-        return false;
         DEBUG_T("victim_iter is not in range\n");
+        return false;
     }
     return true;
 }
@@ -1005,16 +1008,16 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
 					t_sptcompaction->victim_end.user_key().ToString().c_str());
 
     Iterator* victim_iter = t_sptcompaction->victim_iter;
-    Iterator* inputs1_iter = t_sptcompaction->inputs1_iter;
+    Iterator* inputs1_iter = t_sptcompaction->inputs1_iter; 
+
     InternalKey victim_start = t_sptcompaction->victim_start;
     InternalKey victim_end = t_sptcompaction->victim_end;
     bool containsend = t_sptcompaction->containsend;
     
-    DEBUG_T("before seek inputs1_iter\n");
+    //DEBUG_T("before seek inputs1_iter\n");
     inputs1_iter->SeekToFirst();
-    DEBUG_T("after seek inputs1_iter\n");
     victim_iter->Seek(victim_start.Encode());
-    DEBUG_T("after seek victim start\n");
+    //DEBUG_T("after seek victim start\n");
     
     Status status;
     ParsedInternalKey ikey_victim, ikey_inputs1, ikey;
@@ -1022,6 +1025,23 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
     std::string current_user_key;
     bool has_current_user_key = false;
     SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
+   
+    DEBUG_T("before scan iter\n");
+    for(; ValidAndInRange(victim_iter, victim_end, 
+                containsend, &ikey_victim); victim_iter->Next()) {
+        Slice user_key = ikey_victim.user_key;
+    }
+
+    for(; inputs1_iter->Valid(); inputs1_iter->Next()) {
+        Slice inputs1_key = inputs1_iter->key();
+        ParseInternalKey(inputs1_key, &ikey_inputs1);
+        Slice user_key = ikey_inputs1.user_key;
+    }
+    
+    inputs1_iter->SeekToFirst();
+    victim_iter->Seek(victim_start.Encode());
+    
+    DEBUG_T("after scan iter\n");
 
     //-1 inputs1_iter, 0 equal, 1 victim_iter
     int which_valid; 
@@ -1029,6 +1049,7 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
     DEBUG_T("has get inputs1_iter and victim_iter\n");
     for(; inputs1_iter->Valid() && ValidAndInRange(victim_iter, victim_end, 
                 containsend, &ikey_victim) && !shutting_down_.Acquire_Load(); ) {
+        //DEBUG_T("after call ValidAndInRange\n");
         Slice inputs1_key = inputs1_iter->key();
         Slice key;
         bool drop = false;
@@ -1038,11 +1059,12 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
             has_current_user_key = false;
             last_sequence_for_key = kMaxSequenceNumber;
         } else {
-             //DEBUG_T("ikey_inputs1:%s, ikey_victim:%s\n",
-               //      ikey_inputs1.user_key.ToString().c_str(),
-                 //    ikey_victim.user_key.ToString().c_str());
+             //DEBUG_T("before confirm which_valid\n");
+             //DEBUG_T("ikey_inputs1:%s\n", ikey_inputs1.user_key.ToString().c_str());
+             //DEBUG_T("ikey_victim:%s\n", ikey_victim.user_key.ToString().c_str());
              which_valid = user_comparator()->Compare(ikey_inputs1.user_key, 
                                 ikey_victim.user_key);
+             //DEBUG_T("after confirm which_valid\n");
              if(which_valid < 0){
                  ikey = ikey_inputs1;
                  key = inputs1_iter->key();
@@ -1359,11 +1381,14 @@ Status DBImpl::DoSplitCompactionWork(Compaction* c) {
     std::vector<SplitCompaction*> t_sptcompactions;
     std::vector<SplitCompaction*> p_sptcompactions;
     start_timer(COMPUTE_OVERLLAP); 
-	DEBUG_T("---------------in SplitCompaction----------------\n");
+	DEBUG_T("---------------start in SplitCompaction----------------\n");
     versions_->GetSplitCompactions(c, t_sptcompactions,
 									 p_sptcompactions);
     record_timer(COMPUTE_OVERLLAP);
-	
+
+    DEBUG_T("t_sptcompactions size:%d, p_sptcompaction size:%d\n",
+            t_sptcompactions.size(), p_sptcompactions.size());
+
     std::vector<TSplitCompaction*> tcompactionlist; 
     std::vector<CompactionState*> t_compactionstate_list;
     std::vector<CompactionState*> p_compactionstate_list;
@@ -1377,13 +1402,15 @@ Status DBImpl::DoSplitCompactionWork(Compaction* c) {
     }
 
     mutex_.Unlock();
+	DEBUG_T("----------traditional compaction, has----------\n");
 	if(t_sptcompactions.size() > 0) {
 		versions_->MergeTSplitCompaction(c, t_sptcompactions, tcompactionlist);
 		for(int i = 0; i < t_sptcompactions.size(); i++){ 
             tcompaction_index.push_back(t_sptcompactions[i]->inputs1_index);
 			delete t_sptcompactions[i];
         }
-        
+        DEBUG_T("add traditional task size %d to threadpool\n",
+                tcompactionlist.size());
 		for(int i = 0; i < tcompactionlist.size(); i++) {
 		   TraditionalCompactionArgs* tcargs = new TraditionalCompactionArgs;
 		   tcargs->db = this;
@@ -1395,8 +1422,10 @@ Status DBImpl::DoSplitCompactionWork(Compaction* c) {
         }
     }
 
+	DEBUG_T("----------partner compaction, has:----------\n");
 	if(p_sptcompactions.size() > 0) {
         for(int i = 0; i < p_sptcompactions.size(); i++) {
+           DEBUG_T("%d, ", p_sptcompactions[i]->inputs1_index);
 		   PartnerCompactionArgs* pcargs = new PartnerCompactionArgs;
 		   pcargs->db = this;
 		   pcargs->compact = new CompactionState(c);
@@ -1407,16 +1436,19 @@ Status DBImpl::DoSplitCompactionWork(Compaction* c) {
         }
     }
     thpool_->WaitAll();
-	DEBUG_T("---------------in SplitCompaction----------------\n\n");
+	DEBUG_T("---------------finish in SplitCompaction----------------\n\n");
 
     mutex_.Lock();
     
     VersionEdit edit;
     versions_->AddInputDeletions(&edit, c, tcompaction_index);
     AddFileWithTraditionalCompaction(&edit, t_compactionstate_list);
+    DEBUG_T("-------------finish delete and add-----------\n\n");
 
     versions_->LogAndApply(&edit, &mutex_);
 
+    DEBUG_T("-------------finish LogAndApply-----------\n\n");
+    
     for(int i = 0; i < tcompactionlist.size(); i++) {
         delete tcompactionlist[i];
         CleanupCompaction(t_compactionstate_list[i]);
@@ -1426,6 +1458,8 @@ Status DBImpl::DoSplitCompactionWork(Compaction* c) {
 		delete p_sptcompactions[i];
         CleanupCompaction(p_compactionstate_list[i]);
     }
+
+    DEBUG_T("-------------finish DoSplitCompactionWork-----------\n\n");
 	
 	return Status::OK();
 }

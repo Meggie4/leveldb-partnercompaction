@@ -266,8 +266,8 @@ public:
 	virtual void Seek(const Slice& target) {
 		index_ = FindFileWithPartner(icmp_, *flist_, 
                 target, start_index_, end_index_);
-        DEBUG_T("LevelFileNumIteratorWithPartner, seek, index:%d\n",
-                index_);
+        //DEBUG_T("LevelFileNumIteratorWithPartner, seek, index:%d\n",
+          //      index_);
 	}
 	virtual void SeekToFirst() { index_ = start_index_; }
 	virtual void SeekToLast() {
@@ -293,11 +293,11 @@ public:
 		assert(Valid());
 		/////////////meggie
 		uintptr_t flist_ptr = reinterpret_cast<uintptr_t>((void*)flist_);
-		DEBUG_T("flist_ptr:%llu\n", flist_ptr);
+		//DEBUG_T("flist_ptr:%llu\n", flist_ptr);
         EncodeFixed64(value_buf_, flist_ptr);
 		EncodeFixed32(value_buf_+ 8, index_);
 		uintptr_t flist_arg = DecodeFixed64(value_buf_);
-		DEBUG_T("flist_arg:%llu\n", flist_arg);
+		//DEBUG_T("flist_arg:%llu\n", flist_arg);
 		/////////////meggie
 		return Slice(value_buf_, sizeof(value_buf_));
 	}
@@ -333,12 +333,12 @@ static Iterator* GetFileIteratorWithPartner(void* arg,
 		const std::vector<FileMetaData*>* flist = (const std::vector<FileMetaData*>*)(
 					reinterpret_cast<void*>(flist_arg));
 		uint32_t index = DecodeFixed32(file_value.data() + 8);
-        DEBUG_T("GetFileIteratorWithPartner, index:%d, flist_arg:%llu\n", 
-                index, flist_arg);
+        //DEBUG_T("GetFileIteratorWithPartner, index:%d, flist_arg:%llu\n", 
+          //      index, flist_arg);
 
 		FileMetaData* file = (*flist)[index];
 		
-        DEBUG_T("file->number:%lld\n", file->number);
+        //DEBUG_T("file->number:%lld\n", file->number);
 
 		int sz = file->partners.size() + 1;
 		Iterator** list = new Iterator*[sz];
@@ -1363,7 +1363,7 @@ void VersionSet::MergeTSplitCompaction(Compaction* c,
 	int count = 1;
 	
     TSplitCompaction* t_sptcompaction = new TSplitCompaction;
-	DEBUG_T("traditional compaction:\n");
+	//DEBUG_T("traditional compaction:\n");
 	
     for(int i = 1; i <= sz; i++) {
         if(((i == sz) ||
@@ -1445,7 +1445,7 @@ double VersionSet::GetOverlappingRatio(Compaction* c,
 										 inputs0[victimstart_index]->number,
 										 inputs0[victimstart_index]->file_size,
 										 &tableptr); 
-		DEBUG_T("to get origin_smallest, while smallest:%s\n", smallest.user_key().ToString().c_str());
+		//DEBUG_T("to get origin_smallest, while smallest:%s\n", smallest.user_key().ToString().c_str());
 		if(icmp_.Compare(smallest, 
 						 inputs0[victimstart_index]->origin_smallest) < 0)
 			offset_start = 0;
@@ -1453,7 +1453,7 @@ double VersionSet::GetOverlappingRatio(Compaction* c,
 			offset_start = tableptr->ApproximateOffsetOf(smallest.Encode());
 		}
 		delete iter;
-		DEBUG_T("after get origin_smallest:\n");
+		//DEBUG_T("after get origin_smallest:\n");
 		int i = victimstart_index + 1;
 		while(i < victimend_index) {
 			midoverlapsz += inputs0[i]->file_size;

@@ -64,7 +64,6 @@ OTHERPARAMS="--write_buffer_size=$DRAMBUFFSZ"
 
 #valgrind --verbose --log-file=valgrind --leak-check=full  --show-leak-kinds=all $DBBENCH/db_bench --threads=$NUMTHREAD --benchmarks=$BENCHMARKS $OTHERPARAMS
 $DBBENCH/db_bench --threads=$NUMTHREAD --benchmarks=$BENCHMARKS $OTHERPARAMS
-#gdb $DBBENCH/db_bench --threads=$NUMTHREAD --benchmarks=$BENCHMARKS $OTHERPARAMS
 
 #Run all benchmarks
 #$APP_PREFIX $DBBENCH/db_bench --threads=$NUMTHREAD --num=$NUMKEYS --value_size=$VALUSESZ \

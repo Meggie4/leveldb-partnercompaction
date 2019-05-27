@@ -30,6 +30,7 @@ class VersionSet;
 class ThreadPool;
 class SplitCompaction;
 class TSplitCompaction;
+class Compaction;
 //////////meggie
 
 class DBImpl : public DB {
@@ -128,15 +129,17 @@ class DBImpl : public DB {
       EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   ///////////////meggie
-  Status DoSplitCompactionWork(CompactionState* compact,
-					std::vector<SplitCompaction*>& t_sptcompactions,
-					std::vector<SplitCompaction*>& p_sptcompactions);
+  Status DoSplitCompactionWork(Compaction* c);
   static void DoTraditionCompactionWork(void* args);
   static void DoPartnerCompactionWork(void* args);
   void DealWithTraditionCompaction(CompactionState* compact, 
                         TSplitCompaction* t_sptcompaction);
   void DealWithPartnerCompaction(CompactionState* compact, 
                             SplitCompaction* p_sptcompaction);
+  void AddFileWithTraditionalCompaction(VersionEdit* edit, 
+        std::vector<CompactionState*>& t_compactionstate_list);
+  bool ValidAndInRange(Iterator* iter, InternalKey end, 
+                bool containsend, ParsedInternalKey* ikey_victim);
   ///////////////meggie
 
   Status OpenCompactionOutputFile(CompactionState* compact);

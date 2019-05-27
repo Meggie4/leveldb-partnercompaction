@@ -771,12 +771,18 @@ void DBImpl::BackgroundCompaction() {
         status.ToString().c_str(),
         versions_->LevelSummary(&tmp));
   } else {
-    CompactionState* compact = new CompactionState(c);
-    status = DoCompactionWork(compact);
-    if (!status.ok()) {
-      RecordBackgroundError(status);
+    ////////////meggie
+    if(c->level() == 0) {
+        CompactionState* compact = new CompactionState(c);
+        status = DoCompactionWork(compact);
+        if (!status.ok()) {
+            RecordBackgroundError(status);
+        }
+        CleanupCompaction(compact);
+    } else {
+        status = DoSplitCompactionWork(c);
     }
-    CleanupCompaction(compact);
+    ////////////meggie
     c->ReleaseInputs();
     DeleteObsoleteFiles();
   }
@@ -942,6 +948,7 @@ void DBImpl::DoTraditionCompactionWork(void* args) {
     DBImpl* db = tcargs->db;
     db->DealWithTraditionCompaction(tcargs->compact, 
                         tcargs->t_sptcompaction);
+    delete tcargs;
 }
 
 void DBImpl::DoPartnerCompactionWork(void* args) {
@@ -950,6 +957,44 @@ void DBImpl::DoPartnerCompactionWork(void* args) {
     DBImpl* db = pcargs->db;
     db->DealWithPartnerCompaction(pcargs->compact, 
                         pcargs->p_sptcompaction);
+    delete pcargs;
+}
+
+void DBImpl::AddFileWithTraditionalCompaction(VersionEdit* edit, 
+        std::vector<CompactionState*>& t_compactionstate_list) {
+    for(int i = 0; i < t_compactionstate_list.size(); i++) {
+       CompactionState* compact = t_compactionstate_list[i];
+       int level = compact->compaction->level();
+       for(size_t i = 0; i < compact->outputs.size(); i++) {
+           const CompactionState::Output& out = compact->outputs[i];
+           DEBUG_T("to AddFile, smallest:%s, largest:%s\n",
+                   out.smallest.user_key().ToString().c_str(),
+                   out.largest.user_key().ToString().c_str());
+           edit->AddFile(level + 1, out.number, out.file_size
+                   , out.smallest, out.largest);
+       }
+    }
+}
+
+bool DBImpl::ValidAndInRange(Iterator* iter, InternalKey end, 
+                            bool containsend, ParsedInternalKey* ikey_victim) {
+    if(!iter->Valid()){
+        DEBUG_T("victim_iter is not Valid\n");
+        return false;
+    }
+    Slice key = iter->key();
+    if(!ParseInternalKey(key, ikey_victim)){
+        DEBUG_T("victim_iter is not Valid\n");
+        return false;
+    }
+
+    if((containsend &&  user_comparator()->Compare(ikey_victim->user_key, 
+                end.user_key()) > 0) || (!containsend && 
+            user_comparator()->Compare(ikey_victim->user_key, end.user_key()) >= 0)){
+        return false;
+        DEBUG_T("victim_iter is not in range\n");
+    }
+    return true;
 }
 
 void DBImpl::DealWithTraditionCompaction(CompactionState* compact, 
@@ -958,6 +1003,239 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
 	DEBUG_T("victim_start:%s, victim_end:%s\n", 
 					t_sptcompaction->victim_start.user_key().ToString().c_str(),
 					t_sptcompaction->victim_end.user_key().ToString().c_str());
+
+    Iterator* victim_iter = t_sptcompaction->victim_iter;
+    Iterator* inputs1_iter = t_sptcompaction->inputs1_iter;
+    InternalKey victim_start = t_sptcompaction->victim_start;
+    InternalKey victim_end = t_sptcompaction->victim_end;
+    bool containsend = t_sptcompaction->containsend;
+    
+    DEBUG_T("before seek inputs1_iter\n");
+    inputs1_iter->SeekToFirst();
+    DEBUG_T("after seek inputs1_iter\n");
+    victim_iter->Seek(victim_start.Encode());
+    DEBUG_T("after seek victim start\n");
+    
+    Status status;
+    ParsedInternalKey ikey_victim, ikey_inputs1, ikey;
+    Iterator* current_iter;
+    std::string current_user_key;
+    bool has_current_user_key = false;
+    SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
+
+    //-1 inputs1_iter, 0 equal, 1 victim_iter
+    int which_valid; 
+
+    DEBUG_T("has get inputs1_iter and victim_iter\n");
+    for(; inputs1_iter->Valid() && ValidAndInRange(victim_iter, victim_end, 
+                containsend, &ikey_victim) && !shutting_down_.Acquire_Load(); ) {
+        Slice inputs1_key = inputs1_iter->key();
+        Slice key;
+        bool drop = false;
+        //DEBUG_T("to decide now which iter is smaller\n");
+        if(!ParseInternalKey(inputs1_key, &ikey_inputs1)){
+            current_user_key.clear();
+            has_current_user_key = false;
+            last_sequence_for_key = kMaxSequenceNumber;
+        } else {
+             //DEBUG_T("ikey_inputs1:%s, ikey_victim:%s\n",
+               //      ikey_inputs1.user_key.ToString().c_str(),
+                 //    ikey_victim.user_key.ToString().c_str());
+             which_valid = user_comparator()->Compare(ikey_inputs1.user_key, 
+                                ikey_victim.user_key);
+             if(which_valid < 0){
+                 ikey = ikey_inputs1;
+                 key = inputs1_iter->key();
+                 current_iter = inputs1_iter;
+             }
+             else if(which_valid > 0) { 
+                 ikey = ikey_victim;
+                 key = victim_iter->key();
+                 current_iter = victim_iter;
+             }
+             else {
+                 if(ikey_inputs1.sequence >  ikey_victim.sequence){
+                     ikey = ikey_inputs1;
+                     key = inputs1_iter->key();
+                     current_iter = inputs1_iter;
+                 }
+                 else {
+                     ikey = ikey_victim;
+                     key = victim_iter->key();
+                     current_iter = victim_iter;
+                 } 
+             }
+            
+             if (!has_current_user_key ||
+                user_comparator()->Compare(ikey.user_key,
+                                         Slice(current_user_key)) != 0) {
+                // First occurrence of this user key
+                current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+                has_current_user_key = true;
+                last_sequence_for_key = kMaxSequenceNumber;
+              }
+              if (last_sequence_for_key <= compact->smallest_snapshot) {
+                drop = true;    
+              } else if (ikey.type == kTypeDeletion &&
+                     ikey.sequence <= compact->smallest_snapshot &&
+                     compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
+                drop = true;
+              }
+              last_sequence_for_key = ikey.sequence;
+        } 
+        
+        //DEBUG_T("have decided whether drop\n");
+        
+        if(!drop) {
+            if(compact->builder == nullptr) {
+                status = OpenCompactionOutputFile(compact);
+                if(!status.ok()) {
+                    break;
+                }
+            }    
+            if(compact->builder->NumEntries() == 0) {
+                compact->current_output()->smallest.DecodeFrom(key);
+            }
+
+            compact->current_output()->largest.DecodeFrom(key);
+            compact->builder->Add(key, current_iter->value());
+
+            if(compact->builder->FileSize() >= 
+                    compact->compaction->MaxOutputFileSize()) {
+                DEBUG_T("to finish generated a sstable\n");
+                status = FinishCompactionOutputFile(compact, victim_iter);
+                if(!status.ok()) {
+                    break;
+                }
+                DEBUG_T("have generated a sstable\n");
+            }
+        }
+
+        if(which_valid < 0)
+            inputs1_iter->Next();
+        else if(which_valid == 0) {
+            inputs1_iter->Next();
+            victim_iter->Next();
+        } else 
+            victim_iter->Next();
+    }
+
+    DEBUG_T("after concurrent Iterator\n");
+
+    while(inputs1_iter->Valid() && !shutting_down_.Acquire_Load()) {
+        //DEBUG_T("continue inputs1_iter\n");
+        Slice inputs1_key = inputs1_iter->key();
+        bool drop = false;
+        if(!ParseInternalKey(inputs1_key, &ikey_inputs1)){
+            current_user_key.clear();
+            has_current_user_key = false;
+            last_sequence_for_key = kMaxSequenceNumber;
+        } else {
+             if (!has_current_user_key ||
+                user_comparator()->Compare(ikey.user_key,
+                                         Slice(current_user_key)) != 0) {
+                // First occurrence of this user key
+                current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+                has_current_user_key = true;
+                last_sequence_for_key = kMaxSequenceNumber;
+              }
+              if (last_sequence_for_key <= compact->smallest_snapshot) {
+                drop = true;    
+              } else if (ikey.type == kTypeDeletion &&
+                     ikey.sequence <= compact->smallest_snapshot &&
+                     compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
+                drop = true;
+              }
+              last_sequence_for_key = ikey.sequence;
+        }
+        if(!drop) {
+            if(compact->builder == nullptr) {
+                status = OpenCompactionOutputFile(compact);
+                if(!status.ok()) {
+                    break;
+                }
+            }    
+            if(compact->builder->NumEntries() == 0) {
+                compact->current_output()->smallest.DecodeFrom(inputs1_key);
+            }
+
+            compact->current_output()->largest.DecodeFrom(inputs1_key);
+            compact->builder->Add(inputs1_key, inputs1_iter->value());
+
+            if(compact->builder->FileSize() >= 
+                    compact->compaction->MaxOutputFileSize()) {
+                status = FinishCompactionOutputFile(compact, inputs1_iter);
+                if(!status.ok()) {
+                    break;
+                }
+            }
+        }
+        
+        inputs1_iter->Next();
+    }
+
+    DEBUG_T("after inputs1 Iterator\n");
+    
+    while(ValidAndInRange(victim_iter, victim_end, containsend, &ikey_victim)
+            && !shutting_down_.Acquire_Load()) {
+        //DEBUG_T("continue victim_iter\n");
+        bool drop = false;
+        Slice key = victim_iter->key();
+        
+        if (!has_current_user_key ||
+          user_comparator()->Compare(ikey.user_key,
+                                     Slice(current_user_key)) != 0) {
+            // First occurrence of this user key
+            current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+            has_current_user_key = true;
+            last_sequence_for_key = kMaxSequenceNumber;
+        }
+        if (last_sequence_for_key <= compact->smallest_snapshot) {
+            drop = true;    
+        } else if (ikey.type == kTypeDeletion &&
+                 ikey.sequence <= compact->smallest_snapshot &&
+                 compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
+            drop = true;
+        }
+        last_sequence_for_key = ikey.sequence;
+        
+        if(!drop) {
+            if(compact->builder == nullptr) {
+                status = OpenCompactionOutputFile(compact);
+                if(!status.ok()) {
+                    break;
+                }
+            }    
+            if(compact->builder->NumEntries() == 0) {
+                compact->current_output()->smallest.DecodeFrom(key);
+            }
+
+            compact->current_output()->largest.DecodeFrom(key);
+            compact->builder->Add(key, victim_iter->value());
+
+            if(compact->builder->FileSize() >= 
+                    compact->compaction->MaxOutputFileSize()) {
+                status = FinishCompactionOutputFile(compact, victim_iter);
+                if(!status.ok()) {
+                    break;
+                }
+            }
+        }
+        victim_iter->Next();
+    }
+    
+    if(status.ok() && shutting_down_.Acquire_Load()) {
+        status = Status::IOError("Deleting DB during compaction");
+    }
+   
+    if(status.ok() && compact->builder != nullptr) {
+        status = FinishCompactionOutputFile(compact, inputs1_iter);
+    }
+
+    if(!status.ok()) {
+        RecordBackgroundError(status);
+    }
+
 }
 
 void DBImpl::DealWithPartnerCompaction(CompactionState* compact, 
@@ -966,22 +1244,152 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
 	DEBUG_T("victim_start:%s, victim_end:%s\n", 
 			p_sptcompaction->victim_start.user_key().ToString().c_str(),
 			p_sptcompaction->victim_end.user_key().ToString().c_str());
+    assert(versions_->NumLevelFiles(compact->compaction->level()) > 0);
+    assert(compact->builder == nullptr);
+    assert(compact->outfile == nullptr);
+
+    Iterator* input = p_sptcompaction->victim_iter;
+    InternalKey victim_end = p_sptcompaction->victim_end;
+    bool containsend = p_sptcompaction->containsend;
+    
+    FileMetaData* inputs1 = versions_->GetPartnerFileMeta(
+            compact->compaction, p_sptcompaction->inputs1_index);
+    
+    int inputs1_index = p_sptcompaction->inputs1_index;
+
+    input->Seek(p_sptcompaction->victim_start.Encode());
+    
+    Status status;
+    ParsedInternalKey ikey;
+    std::string current_user_key;
+    bool has_current_user_key = false;
+    SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
+
+    for(; ValidAndInRange(input, victim_end, containsend, &ikey) 
+                && !shutting_down_.Acquire_Load(); ) {
+        Slice key = input->key();
+        // Prioritize immutable compaction work
+        if (has_imm_.NoBarrier_Load() != nullptr) {
+          mutex_.Lock();
+          if (imm_ != nullptr) {
+            CompactMemTable();
+            // Wake up MakeRoomForWrite() if necessary.
+            background_work_finished_signal_.SignalAll();
+          }
+          mutex_.Unlock();
+        }
+        bool drop = false;
+        
+        if (!has_current_user_key ||
+          user_comparator()->Compare(ikey.user_key,
+                                     Slice(current_user_key)) != 0) {
+            // First occurrence of this user key
+            current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+            has_current_user_key = true;
+            last_sequence_for_key = kMaxSequenceNumber;
+        }
+        if (last_sequence_for_key <= compact->smallest_snapshot) {
+            drop = true;    
+        } else if (ikey.type == kTypeDeletion &&
+                 ikey.sequence <= compact->smallest_snapshot &&
+                 compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
+            drop = true;
+        }
+        last_sequence_for_key = ikey.sequence;
+        
+        if(!drop) {
+            if(compact->builder == nullptr) {
+                status = OpenCompactionOutputFile(compact);
+                if(!status.ok()) {
+                    break;
+                }
+            }    
+            if(compact->builder->NumEntries() == 0) {
+                compact->current_output()->smallest.DecodeFrom(key);
+            }
+
+            compact->current_output()->largest.DecodeFrom(key);
+            compact->builder->Add(key, input->value());
+
+            if(compact->builder->FileSize() >= 
+                    compact->compaction->MaxOutputFileSize()) {
+                status = FinishCompactionOutputFile(compact, input);
+                if(!status.ok()) {
+                    break;
+                }
+            }
+        }
+
+        input->Next();
+    }
+
+    if(status.ok() && shutting_down_.Acquire_Load()) {
+        status = Status::IOError("Deleting DB during compaction");
+    }
+   
+    if(status.ok() && compact->builder != nullptr) {
+        status = FinishCompactionOutputFile(compact, input);
+    }
+    
+    if(status.ok()) {
+        status = input->status();
+        for(size_t i = 0; i < compact->outputs.size(); i++) {
+            const CompactionState::Output& out = compact->outputs[i];
+            Partner ptner; 
+            ptner.partner_number = out.number;
+            ptner.partner_size = out.file_size;
+            ptner.partner_smallest = out.smallest;
+            ptner.partner_largest = out.largest;
+            inputs1->partners.push_back(ptner);
+
+            if(user_comparator()->Compare(ptner.partner_largest.user_key(), inputs1->largest.user_key()) > 0)
+                inputs1->largest = ptner.partner_largest;
+            DEBUG_T("UpdateFile, smallest:%s, largest:%s\n",
+                inputs1->smallest.user_key().ToString().c_str(),
+                inputs1->largest.user_key().ToString().c_str());
+        }
+    }
+    
+    if(!status.ok()) {
+        RecordBackgroundError(status);
+    }
 }
 
-Status DBImpl::DoSplitCompactionWork(CompactionState* compact,
-									 std::vector<SplitCompaction*>& t_sptcompactions,
-									 std::vector<SplitCompaction*>& p_sptcompactions) {
-	Compaction* c = compact->compaction;
-	std::vector<TSplitCompaction*> tcompactionlist; 
+Status DBImpl::DoSplitCompactionWork(Compaction* c) {
+    std::vector<SplitCompaction*> t_sptcompactions;
+    std::vector<SplitCompaction*> p_sptcompactions;
+    start_timer(COMPUTE_OVERLLAP); 
+	DEBUG_T("---------------in SplitCompaction----------------\n");
+    versions_->GetSplitCompactions(c, t_sptcompactions,
+									 p_sptcompactions);
+    record_timer(COMPUTE_OVERLLAP);
+	
+    std::vector<TSplitCompaction*> tcompactionlist; 
+    std::vector<CompactionState*> t_compactionstate_list;
+    std::vector<CompactionState*> p_compactionstate_list;
+    std::vector<int> tcompaction_index;
+    
+    SequenceNumber smallest_snapshot;
+    if (snapshots_.empty()) {
+      smallest_snapshot = versions_->LastSequence();
+    } else {
+      smallest_snapshot = snapshots_.oldest()->sequence_number();
+    }
+
+    mutex_.Unlock();
 	if(t_sptcompactions.size() > 0) {
 		versions_->MergeTSplitCompaction(c, t_sptcompactions, tcompactionlist);
-		for(int i = 0; i < t_sptcompactions.size(); i++) 
+		for(int i = 0; i < t_sptcompactions.size(); i++){ 
+            tcompaction_index.push_back(t_sptcompactions[i]->inputs1_index);
 			delete t_sptcompactions[i];
+        }
         
 		for(int i = 0; i < tcompactionlist.size(); i++) {
 		   TraditionalCompactionArgs* tcargs = new TraditionalCompactionArgs;
 		   tcargs->db = this;
-		   tcargs->compact = compact;
+		   tcargs->compact = new CompactionState(c);
+           tcargs->compact->smallest_snapshot = smallest_snapshot;
+           t_compactionstate_list.push_back(tcargs->compact);
 		   tcargs->t_sptcompaction = tcompactionlist[i];
            thpool_->AddJob(DoTraditionCompactionWork, tcargs); 
         }
@@ -991,18 +1399,33 @@ Status DBImpl::DoSplitCompactionWork(CompactionState* compact,
         for(int i = 0; i < p_sptcompactions.size(); i++) {
 		   PartnerCompactionArgs* pcargs = new PartnerCompactionArgs;
 		   pcargs->db = this;
-		   pcargs->compact = compact;
+		   pcargs->compact = new CompactionState(c);
+           pcargs->compact->smallest_snapshot = smallest_snapshot;
+           p_compactionstate_list.push_back(pcargs->compact);
 		   pcargs->p_sptcompaction = p_sptcompactions[i];
            thpool_->AddJob(DoPartnerCompactionWork,	pcargs);
         }
     }
     thpool_->WaitAll();
-	
-	for(int i = 0; i < tcompactionlist.size(); i++) 
-		delete tcompactionlist[i];
-	
-	for(int i = 0; i < p_sptcompactions.size(); i++) 
+	DEBUG_T("---------------in SplitCompaction----------------\n\n");
+
+    mutex_.Lock();
+    
+    VersionEdit edit;
+    versions_->AddInputDeletions(&edit, c, tcompaction_index);
+    AddFileWithTraditionalCompaction(&edit, t_compactionstate_list);
+
+    versions_->LogAndApply(&edit, &mutex_);
+
+    for(int i = 0; i < tcompactionlist.size(); i++) {
+        delete tcompactionlist[i];
+        CleanupCompaction(t_compactionstate_list[i]);
+    }
+
+	for(int i = 0; i < p_sptcompactions.size(); i++) {
 		delete p_sptcompactions[i];
+        CleanupCompaction(p_compactionstate_list[i]);
+    }
 	
 	return Status::OK();
 }
@@ -1018,22 +1441,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       compact->compaction->level(),
       compact->compaction->num_input_files(1),
       compact->compaction->level() + 1);
-
-
-  /////////////meggie
-  if(compact->compaction->level() > 0) {
-      std::vector<SplitCompaction*> t_sptcompactions;
-      std::vector<SplitCompaction*> p_sptcompactions;
-      start_timer(COMPUTE_OVERLLAP); 
-	  DEBUG_T("---------------in SplitCompaction----------------\n");
-      versions_->GetSplitCompactions(compact->compaction, 
-									 t_sptcompactions,
-									 p_sptcompactions);
-	  DoSplitCompactionWork(compact, t_sptcompactions, p_sptcompactions);
-	  DEBUG_T("---------------in SplitCompaction----------------\n\n");
-      record_timer(COMPUTE_OVERLLAP);
-  }
-  /////////////meggie
 
   assert(versions_->NumLevelFiles(compact->compaction->level()) > 0);
   assert(compact->builder == nullptr);

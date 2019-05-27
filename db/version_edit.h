@@ -18,9 +18,8 @@ class VersionSet;
 struct Partner {
     uint64_t partner_number;
 	uint64_t partner_size;
-    InternalKey parter_smallest;
+    InternalKey partner_smallest;
     InternalKey partner_largest;
-    bool comtainsend;
 };
 ///////////meggie
 

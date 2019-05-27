@@ -48,7 +48,6 @@ struct SplitCompaction {
     InternalKey victim_end;
     bool containsend;
     int inputs1_index;
-	Iterator* inputs1_iter;
 	
 	SplitCompaction():
 		victim_iter(nullptr) {}
@@ -314,6 +313,9 @@ class VersionSet {
   Iterator* NewIteratorWithPartner(TableCache* cache, const FileMetaData* file);
   Iterator* GetIteratorWithPartner(const std::vector<FileMetaData*>& files,
 							int start_index, int end_index);
+  void AddInputDeletions(VersionEdit* edit, Compaction* c, 
+                         std::vector<int> tcompaction_index);
+  FileMetaData* GetPartnerFileMeta(Compaction* c, int inputs1_index);
   ////////////////meggie
 
   // Return the approximate offset in the database of the data for

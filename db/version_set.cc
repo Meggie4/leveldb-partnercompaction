@@ -231,8 +231,8 @@ int FindFileWithPartner(const InternalKeyComparator& icmp,
              const std::vector<FileMetaData*>& files,
              const Slice& key, int start_index, int end_index) {
   uint32_t left = start_index;
-  uint32_t right = end_index;
-  while (left <= right) {
+  uint32_t right = end_index + 1;
+  while (left < right) {
     uint32_t mid = (left + right) / 2;
     const FileMetaData* f = files[mid];
     if (icmp.InternalKeyComparator::Compare(f->largest.Encode(), key) < 0) {
@@ -266,6 +266,8 @@ public:
 	virtual void Seek(const Slice& target) {
 		index_ = FindFileWithPartner(icmp_, *flist_, 
                 target, start_index_, end_index_);
+        DEBUG_T("LevelFileNumIteratorWithPartner, seek, index:%d\n",
+                index_);
 	}
 	virtual void SeekToFirst() { index_ = start_index_; }
 	virtual void SeekToLast() {
@@ -291,8 +293,11 @@ public:
 		assert(Valid());
 		/////////////meggie
 		uintptr_t flist_ptr = reinterpret_cast<uintptr_t>((void*)flist_);
-		EncodeFixed64(value_buf_, flist_ptr);
-		EncodeFixed32(value_buf_, index_);
+		DEBUG_T("flist_ptr:%llu\n", flist_ptr);
+        EncodeFixed64(value_buf_, flist_ptr);
+		EncodeFixed32(value_buf_+ 8, index_);
+		uintptr_t flist_arg = DecodeFixed64(value_buf_);
+		DEBUG_T("flist_arg:%llu\n", flist_arg);
 		/////////////meggie
 		return Slice(value_buf_, sizeof(value_buf_));
 	}
@@ -312,28 +317,29 @@ private:
 	/////////////meggie
 };
 
-struct PartnerIteratorArg {
-	TableCache* cache;
-	VersionSet* vset;
-};
-		
+static InternalKeyComparator global_icmp(BytewiseComparator());
+
 static Iterator* GetFileIteratorWithPartner(void* arg,
                                  const ReadOptions& options,
                                  const Slice& file_value) {
-	PartnerIteratorArg* args = reinterpret_cast<PartnerIteratorArg*>(arg);
-	TableCache* cache = args->cache;
-	VersionSet* vset = args->vset;
-	delete args;
+	TableCache* cache = reinterpret_cast<TableCache*>(arg);
+	//delete args;
     if (file_value.size() != 12) {
 		return NewErrorIterator(
 				   Status::Corruption("FileReader invoked with unexpected value"));
 	} else {
 		uintptr_t flist_arg = DecodeFixed64(file_value.data());
+
 		const std::vector<FileMetaData*>* flist = (const std::vector<FileMetaData*>*)(
 					reinterpret_cast<void*>(flist_arg));
 		uint32_t index = DecodeFixed32(file_value.data() + 8);
+        DEBUG_T("GetFileIteratorWithPartner, index:%d, flist_arg:%llu\n", 
+                index, flist_arg);
+
 		FileMetaData* file = (*flist)[index];
 		
+        DEBUG_T("file->number:%lld\n", file->number);
+
 		int sz = file->partners.size() + 1;
 		Iterator** list = new Iterator*[sz];
 		list[0] = cache->NewIterator(options, file->number, file->file_size);
@@ -342,7 +348,7 @@ static Iterator* GetFileIteratorWithPartner(void* arg,
 								  file->partners[i].partner_number,
 								  file->partners[i].partner_size);
 		}
-		return NewMergingIterator(&vset->icmp_, list, sz);
+		return NewMergingIterator(&global_icmp, list, sz);
 	}
 }
 
@@ -897,6 +903,10 @@ class VersionSet::Builder {
     if (levels_[level].deleted_files.count(f->number) > 0) {
       // File is deleted: do nothing
     } else {
+      if(level > 1)
+         DEBUG_T("MaybeAddFile, smallest:%s, largest:%s\n",
+              f->smallest.user_key().ToString().c_str(),
+              f->largest.user_key().ToString().c_str());
       std::vector<FileMetaData*>* files = &v->files_[level];
       if (level > 0 && !files->empty()) {
         // Must not overlap
@@ -1292,20 +1302,36 @@ const char* VersionSet::LevelSummary(LevelSummaryStorage* scratch) const {
 }
 
 ////////////////////meggie
-////针对的是victim inputs没有partner的情况, 获取traditional compaction      
+////针对的是victim inputs没有partner的情况, 获取traditional compaction 
+FileMetaData* VersionSet::GetPartnerFileMeta(Compaction* c, int inputs1_index) {
+    const std::vector<FileMetaData*>& files1 = c->inputs_[1];
+    return files1[inputs1_index]; 
+}
+
+void VersionSet::AddInputDeletions(VersionEdit* edit, Compaction* c, 
+                                std::vector<int> tcompaction_index) {
+    const std::vector<FileMetaData*>& files0 = c->inputs_[0];
+    const std::vector<FileMetaData*>& files1 = c->inputs_[1];
+    int level = c->level();
+    for(int i = 0; i < files0.size(); i++) {
+        edit->DeleteFile(level, files0[i]->number);
+    } 
+
+    for(int i = 0; i < tcompaction_index.size(); i++) {
+        edit->DeleteFile(level + 1, files1[tcompaction_index[i]]->number);
+    } 
+}
+
 Iterator* VersionSet::GetIteratorWithPartner(
                     const std::vector<FileMetaData*>& files,
 					        int start_index, int end_index) {
 	ReadOptions options;
     options.verify_checksums = options_->paranoid_checks;
     options.fill_cache = false;
-    PartnerIteratorArg* args = new PartnerIteratorArg;
-    args->cache = table_cache_;
-    args->vset = this;
    
     return NewTwoLevelIterator(new Version::LevelFileNumIteratorWithPartner(icmp_, &files, 
 							start_index, end_index), &GetFileIteratorWithPartner, 
-							args, options);
+							table_cache_, options);
 }
 
 void VersionSet::MergeTSplitCompaction(Compaction* c, 
@@ -1526,8 +1552,9 @@ void VersionSet::GetSplitCompactions(Compaction* c,
             j++;
         }
         victims.insert(j);
-        sptcompaction->victim_start = (icmp_.Compare(inputs0[j]->smallest, 
-                            inputs1[i]->smallest) > 0)? inputs0[j]->smallest: 
+        sptcompaction->victim_start = (i == 0 || 
+                icmp_.Compare(inputs0[j]->smallest, 
+                        inputs1[i]->smallest) > 0)? inputs0[j]->smallest: 
                             inputs1[i]->smallest;
         while(j + 1 < sz0 && icmp_.Compare(inputs1[i]->largest,
             inputs0[j + 1]->smallest) >= 0) {
@@ -1554,7 +1581,9 @@ void VersionSet::GetSplitCompactions(Compaction* c,
 		sptcompaction->victim_iter = 
                 GetIteratorWithPartner(inputs0, 
                     victimstart_index, victimend_index); 
-        
+       
+        //TestVictimIterator(sptcompaction->victim_iter);
+
         sptcompaction->inputs1_index = i;
 
         DEBUG_T("inputs1[%d], sptcompaction:", i);
@@ -1616,6 +1645,12 @@ void VersionSet::AddLiveFiles(std::set<uint64_t>* live) {
       const std::vector<FileMetaData*>& files = v->files_[level];
       for (size_t i = 0; i < files.size(); i++) {
         live->insert(files[i]->number);
+        /////////meggie
+
+        for(int j = 0; j < files[i]->partners.size(); j++) {
+            live->insert(files[i]->partners[j].partner_number); 
+        }
+        /////////meggie
       }
     }
   }

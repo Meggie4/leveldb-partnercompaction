@@ -82,7 +82,8 @@ TwoLevelIterator::TwoLevelIterator(
       arg_(arg),
       options_(options),
       index_iter_(index_iter),
-      data_iter_(nullptr) {
+      data_iter_(nullptr) 
+    {
 }
 
 TwoLevelIterator::~TwoLevelIterator() {

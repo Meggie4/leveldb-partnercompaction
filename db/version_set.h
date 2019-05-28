@@ -316,6 +316,8 @@ class VersionSet {
   void AddInputDeletions(VersionEdit* edit, Compaction* c, 
                          std::vector<int> tcompaction_index);
   FileMetaData* GetPartnerFileMeta(Compaction* c, int inputs1_index);
+  void TestIterator(Iterator* iter, bool range, InternalKey start, InternalKey end, bool containsend);
+  //void TestIterator(Iterator* iter);
   ////////////////meggie
 
   // Return the approximate offset in the database of the data for

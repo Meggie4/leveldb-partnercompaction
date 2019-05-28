@@ -18,6 +18,9 @@ class MergingIterator : public Iterator {
         children_(new IteratorWrapper[n]),
         n_(n),
         current_(nullptr),
+        ///////////meggie
+        set_range_(false),
+        ///////////meggie
         direction_(kForward) {
     for (int i = 0; i < n; i++) {
       children_[i].Set(children[i]);
@@ -34,7 +37,13 @@ class MergingIterator : public Iterator {
 
   virtual void SeekToFirst() {
     for (int i = 0; i < n_; i++) {
-      children_[i].SeekToFirst();
+        //////////////meggie
+        if(set_range_ && i == range_index_) {
+            children_[i].Seek(range_start_);
+        }
+        else 
+        //////////////meggie
+            children_[i].SeekToFirst();
     }
     FindSmallest();
     direction_ = kForward;
@@ -132,6 +141,18 @@ class MergingIterator : public Iterator {
     return status;
   }
 
+  ////////////////meggie
+  void SetChildRange(int index, Slice start, 
+          Slice end, bool containsend) {
+     range_index_ = index;
+     range_start_ = start;
+     range_end_ = end;
+     range_containsend_ = containsend;
+     set_range_ = true;
+  }
+  ////////////////meggie
+
+
  private:
   void FindSmallest();
   void FindLargest();
@@ -144,6 +165,15 @@ class MergingIterator : public Iterator {
   int n_;
   IteratorWrapper* current_;
 
+  ////////////meggie
+  bool set_range_;
+  int range_index_;
+  Slice range_start_;
+  Slice range_end_;
+  bool range_containsend_;
+  bool Range_iter_valid();
+  ////////////meggie
+
   // Which direction is the iterator moving?
   enum Direction {
     kForward,
@@ -152,17 +182,44 @@ class MergingIterator : public Iterator {
   Direction direction_;
 };
 
+////////////meggie
+bool MergingIterator::Range_iter_valid() {
+    IteratorWrapper* child = &children_[range_index_];
+    if(!child->Valid())
+        return false;
+    if((range_containsend_ && comparator_->Compare(child->key(),
+                range_end_) > 0) || (!range_containsend_ && 
+                comparator_->Compare(child->key(), range_end_) >= 0))
+        return false;
+    return true;
+}
+////////////meggie
+
 void MergingIterator::FindSmallest() {
   IteratorWrapper* smallest = nullptr;
   for (int i = 0; i < n_; i++) {
     IteratorWrapper* child = &children_[i];
-    if (child->Valid()) {
-      if (smallest == nullptr) {
-        smallest = child;
-      } else if (comparator_->Compare(child->key(), smallest->key()) < 0) {
-        smallest = child;
+
+    ////////////////meggie
+    if(set_range_) {
+       if(i == range_index_ && Range_iter_valid() || 
+               (i != range_index_ && child->Valid())){
+        if (smallest == nullptr) {
+            smallest = child;
+        } else if (comparator_->Compare(child->key(), smallest->key()) < 0) {
+            smallest = child;
+        }
+       } 
+    } else {
+      if(child->Valid()) {
+        if (smallest == nullptr) {
+            smallest = child;
+        } else if (comparator_->Compare(child->key(), smallest->key()) < 0) {
+            smallest = child;
+        }
       }
     }
+    ////////////////meggie
   }
   current_ = smallest;
 }

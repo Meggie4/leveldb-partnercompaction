@@ -772,7 +772,7 @@ void DBImpl::BackgroundCompaction() {
         versions_->LevelSummary(&tmp));
   } else {
     ////////////meggie
-    if(c->level() == 0) {
+    if(c->level() >= 0) {
         CompactionState* compact = new CompactionState(c);
         status = DoCompactionWork(compact);
         if (!status.ok()) {
@@ -982,18 +982,23 @@ bool DBImpl::ValidAndInRange(Iterator* iter, InternalKey end,
         DEBUG_T("victim_iter is not Valid\n");
         return false;
     }
-    DEBUG_T("ValidAndInRange is Valid\n");
+    //DEBUG_T("ValidAndInRange is Valid\n");
     Slice key = iter->key();
     if(!ParseInternalKey(key, ikey_victim)){
-        DEBUG_T("ParsedInternalKey failed\n");
+        //DEBUG_T("ParsedInternalKey failed\n");
         return false;
     }
+    //DEBUG_T("ikey_victim user_key :%s\n",
+      //      ikey_victim->user_key.ToString().c_str());
+    //DEBUG_T("end user_key:%s\n", end.user_key().ToString().c_str());
+    InternalKey mykey;
+    mykey.SetFrom(*ikey_victim);
+    if((containsend &&  internal_comparator_.Compare(mykey, 
+                end) > 0) || (!containsend && 
+            internal_comparator_.Compare(mykey, end) >= 0)){
     DEBUG_T("ikey_victim user_key :%s\n",
             ikey_victim->user_key.ToString().c_str());
     DEBUG_T("end user_key:%s\n", end.user_key().ToString().c_str());
-    if((containsend &&  user_comparator()->Compare(ikey_victim->user_key, 
-                end.user_key()) > 0) || (!containsend && 
-            user_comparator()->Compare(ikey_victim->user_key, end.user_key()) >= 0)){
         DEBUG_T("victim_iter is not in range\n");
         return false;
     }
@@ -1002,7 +1007,7 @@ bool DBImpl::ValidAndInRange(Iterator* iter, InternalKey end,
 
 void DBImpl::DealWithTraditionCompaction(CompactionState* compact, 
                         TSplitCompaction* t_sptcompaction) {
-	DEBUG_T("in DealWithTradintionCompaction\n");
+	DEBUG_T("in DealWithTraditionCompaction\n");
 	DEBUG_T("victim_start:%s, victim_end:%s\n", 
 					t_sptcompaction->victim_start.user_key().ToString().c_str(),
 					t_sptcompaction->victim_end.user_key().ToString().c_str());
@@ -1026,16 +1031,29 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
     bool has_current_user_key = false;
     SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
    
-    DEBUG_T("before scan iter\n");
-    for(; ValidAndInRange(victim_iter, victim_end, 
+    DEBUG_T("before scan iter, victim_iter:\n");
+    /*for(; ValidAndInRange(victim_iter, victim_end, 
                 containsend, &ikey_victim); victim_iter->Next()) {
         Slice user_key = ikey_victim.user_key;
-    }
+        DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
+    }*/
 
+    for(; victim_iter->Valid(); victim_iter->Next()) {
+        Slice victim_key = victim_iter->key();
+        ParseInternalKey(victim_key, &ikey_victim);
+        Slice user_key = ikey_victim.user_key;
+        user_key.ToString().c_str();
+        //DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
+    }
+    
+    DEBUG_T("\nscan, inputs1_iter:\n");
     for(; inputs1_iter->Valid(); inputs1_iter->Next()) {
         Slice inputs1_key = inputs1_iter->key();
         ParseInternalKey(inputs1_key, &ikey_inputs1);
         Slice user_key = ikey_inputs1.user_key;
+        user_key.ToString().c_str();
+
+        //DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
     }
     
     inputs1_iter->SeekToFirst();
@@ -1049,7 +1067,10 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
     DEBUG_T("has get inputs1_iter and victim_iter\n");
     for(; inputs1_iter->Valid() && ValidAndInRange(victim_iter, victim_end, 
                 containsend, &ikey_victim) && !shutting_down_.Acquire_Load(); ) {
-        //DEBUG_T("after call ValidAndInRange\n");
+        //DEBUG_T("after call ValidAndInRange\n"); 
+        //DEBUG_T("inputs1_iter:%p\n", inputs1_iter);
+        if(!inputs1_iter)
+            DEBUG_T("inputs1_iter is nullptr\n");
         Slice inputs1_key = inputs1_iter->key();
         Slice key;
         bool drop = false;
@@ -1062,30 +1083,21 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
              //DEBUG_T("before confirm which_valid\n");
              //DEBUG_T("ikey_inputs1:%s\n", ikey_inputs1.user_key.ToString().c_str());
              //DEBUG_T("ikey_victim:%s\n", ikey_victim.user_key.ToString().c_str());
-             which_valid = user_comparator()->Compare(ikey_inputs1.user_key, 
-                                ikey_victim.user_key);
+             InternalKey victimkey, inputs1key;
+             victimkey.SetFrom(ikey_victim);
+             inputs1key.SetFrom(ikey_inputs1);
+             which_valid = internal_comparator_.Compare(
+                     inputs1key, victimkey);
              //DEBUG_T("after confirm which_valid\n");
              if(which_valid < 0){
                  ikey = ikey_inputs1;
                  key = inputs1_iter->key();
                  current_iter = inputs1_iter;
              }
-             else if(which_valid > 0) { 
+             else { 
                  ikey = ikey_victim;
                  key = victim_iter->key();
                  current_iter = victim_iter;
-             }
-             else {
-                 if(ikey_inputs1.sequence >  ikey_victim.sequence){
-                     ikey = ikey_inputs1;
-                     key = inputs1_iter->key();
-                     current_iter = inputs1_iter;
-                 }
-                 else {
-                     ikey = ikey_victim;
-                     key = victim_iter->key();
-                     current_iter = victim_iter;
-                 } 
              }
             
              if (!has_current_user_key ||
@@ -1106,17 +1118,22 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
               last_sequence_for_key = ikey.sequence;
         } 
         
-        //DEBUG_T("have decided whether drop\n");
+        DEBUG_T("concurrent, user_key:%s\n", 
+                        ikey.user_key.ToString().c_str());
         
         if(!drop) {
             if(compact->builder == nullptr) {
+                DEBUG_T("to OpenCompactionOutputFile, which_valid:%d\n",
+                        which_valid);
                 status = OpenCompactionOutputFile(compact);
                 if(!status.ok()) {
                     break;
                 }
             }    
             if(compact->builder->NumEntries() == 0) {
+                DEBUG_T("first entry of a sstable\n");
                 compact->current_output()->smallest.DecodeFrom(key);
+                DEBUG_T("after first entry of a sstable\n");
             }
 
             compact->current_output()->largest.DecodeFrom(key);
@@ -1135,10 +1152,7 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
 
         if(which_valid < 0)
             inputs1_iter->Next();
-        else if(which_valid == 0) {
-            inputs1_iter->Next();
-            victim_iter->Next();
-        } else 
+        else 
             victim_iter->Next();
     }
 
@@ -1192,12 +1206,11 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
                 }
             }
         }
-        
         inputs1_iter->Next();
     }
 
     DEBUG_T("after inputs1 Iterator\n");
-    
+   
     while(ValidAndInRange(victim_iter, victim_end, containsend, &ikey_victim)
             && !shutting_down_.Acquire_Load()) {
         //DEBUG_T("continue victim_iter\n");
@@ -1289,9 +1302,12 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
 
     for(; ValidAndInRange(input, victim_end, containsend, &ikey) 
                 && !shutting_down_.Acquire_Load(); ) {
+        DEBUG_T("partner compaction, user_key:%s\n",
+                ikey.user_key.ToString().c_str());
         Slice key = input->key();
+        DEBUG_T("Get key\n");
         // Prioritize immutable compaction work
-        if (has_imm_.NoBarrier_Load() != nullptr) {
+        /*if (has_imm_.NoBarrier_Load() != nullptr) {
           mutex_.Lock();
           if (imm_ != nullptr) {
             CompactMemTable();
@@ -1299,7 +1315,7 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
             background_work_finished_signal_.SignalAll();
           }
           mutex_.Unlock();
-        }
+        }*/
         bool drop = false;
         
         if (!has_current_user_key ||
@@ -1364,7 +1380,10 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
             ptner.partner_largest = out.largest;
             inputs1->partners.push_back(ptner);
 
-            if(user_comparator()->Compare(ptner.partner_largest.user_key(), inputs1->largest.user_key()) > 0)
+            DEBUG_T("ptner.partner_largest:%s, inputs1->largest:%s\n",
+                    ptner.partner_largest.user_key().ToString().c_str(), 
+                    inputs1->largest.user_key().ToString().c_str());
+            if(internal_comparator_.Compare(ptner.partner_largest, inputs1->largest) > 0)
                 inputs1->largest = ptner.partner_largest;
             DEBUG_T("UpdateFile, smallest:%s, largest:%s\n",
                 inputs1->smallest.user_key().ToString().c_str(),
@@ -1484,6 +1503,35 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   } else {
     compact->smallest_snapshot = snapshots_.oldest()->sequence_number();
   }
+
+  ///////////////meggie
+  if(compact->compaction->level() >= 1) {
+    start_timer(COMPUTE_OVERLLAP); 
+    std::vector<SplitCompaction*> t_sptcompactions;
+    std::vector<SplitCompaction*> p_sptcompactions;
+	DEBUG_T("---------------start in SplitCompaction----------------\n");
+    versions_->GetSplitCompactions(compact->compaction, t_sptcompactions,
+									 p_sptcompactions);
+    record_timer(COMPUTE_OVERLLAP);
+    std::vector<TSplitCompaction*> tcompactionlist;
+    
+    if(t_sptcompactions.size() > 0) {
+		versions_->MergeTSplitCompaction(compact->compaction, t_sptcompactions, tcompactionlist);
+    }
+    for(int i = 0; i < t_sptcompactions.size(); i++) {
+        delete t_sptcompactions[i];
+    }
+    for(int j = 0; j < p_sptcompactions.size(); j++) {
+        delete p_sptcompactions[j];
+    }
+    
+    for(int k = 0; k < tcompactionlist.size(); k++) {
+        delete tcompactionlist[k];
+    }
+	DEBUG_T("---------------end in SplitCompaction----------------\n\n");
+  }
+  ///////////////meggie
+
 
   // Release mutex while we're actually doing the compaction work
   mutex_.Unlock();

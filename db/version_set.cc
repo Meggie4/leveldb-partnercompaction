@@ -903,10 +903,10 @@ class VersionSet::Builder {
     if (levels_[level].deleted_files.count(f->number) > 0) {
       // File is deleted: do nothing
     } else {
-      if(level > 1)
+      /*if(level > 1)
          DEBUG_T("MaybeAddFile, smallest:%s, largest:%s\n",
               f->smallest.user_key().ToString().c_str(),
-              f->largest.user_key().ToString().c_str());
+              f->largest.user_key().ToString().c_str());*/
       std::vector<FileMetaData*>* files = &v->files_[level];
       if (level > 0 && !files->empty()) {
         // Must not overlap
@@ -1328,11 +1328,42 @@ Iterator* VersionSet::GetIteratorWithPartner(
 	ReadOptions options;
     options.verify_checksums = options_->paranoid_checks;
     options.fill_cache = false;
+    //options.comparator = &icmp_;
    
     return NewTwoLevelIterator(new Version::LevelFileNumIteratorWithPartner(icmp_, &files, 
 							start_index, end_index), &GetFileIteratorWithPartner, 
 							table_cache_, options);
 }
+
+void VersionSet::TestIterator(Iterator* iter, bool range, InternalKey start, InternalKey end, bool containsend) {
+//void VersionSet::TestIterator(Iterator* iter){ 
+    DEBUG_T("test iterator\n");
+    ParsedInternalKey ikey;
+    if(!range) {
+        iter->SeekToFirst();
+        for(; iter->Valid(); iter->Next()) {
+            Slice key = iter->key();
+            ParseInternalKey(key, &ikey);
+            Slice user_key = ikey.user_key;
+            DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
+        }
+        DEBUG_T("\n");
+    } else {
+        iter->Seek(start.Encode());
+        for(; iter->Valid(); iter->Next()) {
+            Slice key = iter->key();
+            ParseInternalKey(key, &ikey);
+            InternalKey mykey;
+            mykey.SetFrom(ikey);
+            if((containsend &&  icmp_.Compare(mykey, end) > 0) || (!containsend && icmp_.Compare(mykey, end) >= 0))
+                break;
+            Slice user_key = ikey.user_key;
+            DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
+        }
+        DEBUG_T("\n");
+    }
+}
+
 
 void VersionSet::MergeTSplitCompaction(Compaction* c, 
 					std::vector<SplitCompaction*>& t_sptcompactions,
@@ -1353,6 +1384,9 @@ void VersionSet::MergeTSplitCompaction(Compaction* c,
         t_sptcompaction->containsend = t_sptcompactions[0]->containsend;
         t_sptcompaction->inputs1_iter = NewIteratorWithPartner(
 											table_cache_, files1[inputs1_index]);
+
+        //DEBUG_T("test single inputs1_iter\n");
+        //TestIterator(t_sptcompaction->inputs1_iter, false, InternalKey(), InternalKey(), false);
         result.push_back(t_sptcompaction);
         return;
     }
@@ -1367,8 +1401,7 @@ void VersionSet::MergeTSplitCompaction(Compaction* c,
 	
     for(int i = 1; i <= sz; i++) {
         if(((i == sz) ||
-				t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1) 
-				&& count > 1) {
+				t_sptcompactions[i]->inputs1_index - pre->inputs1_index > 1)) {
 			Iterator* victim_iter, *inputs1_iter;
 			t_sptcompaction->victim_start = tmpt_sptcompactions[0]->victim_start;
 			t_sptcompaction->victim_end = tmpt_sptcompactions[count - 1]->victim_end;
@@ -1383,11 +1416,45 @@ void VersionSet::MergeTSplitCompaction(Compaction* c,
 			
             DEBUG_T("inputs1 index from %d~%d\n", inputs1start_index, inputs1end_index);
 			inputs1_iter = GetIteratorWithPartner(files1, inputs1start_index, inputs1end_index);
-			
+            
+            //DEBUG_T("in MergeTSplitCompaction, test inputs1_iter\n");
+            //TestIterator(inputs1_iter, false, InternalKey(), 
+            //        InternalKey(), false);
+			//
             DEBUG_T("victims index from %d~%d\n", victimstart_index, victimend_index);
 			victim_iter = GetIteratorWithPartner(files0, victimstart_index, victimend_index);
-			
-			t_sptcompaction->victim_iter = victim_iter;
+            
+            DEBUG_T("in MergeTSplitCompaction, test victim_iter\n");
+            //TestIterator(victim_iter, true, 
+            //       t_sptcompaction->victim_start, 
+            //       t_sptcompaction->victim_end, 
+            //       t_sptcompaction->containsend);
+		    //TestIterator(victim_iter);
+
+            Iterator* list[2];
+            list[0] = victim_iter;
+            list[1] = inputs1_iter;
+            Iterator* merge_iter = NewMergingIterator(&icmp_,
+                    list, 2);
+            merge_iter->SetChildRange(0, 
+                    t_sptcompaction->victim_start.Encode(),
+                    t_sptcompaction->victim_end.Encode(), 
+                    t_sptcompaction->containsend);
+
+            DEBUG_T("print merge iter:\n");
+            merge_iter->SeekToFirst();
+            for(; merge_iter->Valid(); merge_iter->Next()) {
+                Slice key = merge_iter->key();
+                ParsedInternalKey ikey;
+                ParseInternalKey(key, &ikey);
+                Slice user_key = ikey.user_key;
+                DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
+            }
+            DEBUG_T("print merge iter end\n");
+
+            delete merge_iter;
+
+            t_sptcompaction->victim_iter = victim_iter;
 			t_sptcompaction->inputs1_iter = inputs1_iter;
 			result.push_back(t_sptcompaction);
 
@@ -1581,9 +1648,13 @@ void VersionSet::GetSplitCompactions(Compaction* c,
 		sptcompaction->victim_iter = 
                 GetIteratorWithPartner(inputs0, 
                     victimstart_index, victimend_index); 
+        
+        //DEBUG_T("in GetSplitCompactions, test victim_iter\n");
+        //TestIterator(sptcompaction->victim_iter, true, 
+        //        sptcompaction->victim_start, 
+        //        sptcompaction->victim_end, 
+        //        sptcompaction->containsend);
        
-        //TestVictimIterator(sptcompaction->victim_iter);
-
         sptcompaction->inputs1_index = i;
 
         DEBUG_T("inputs1[%d], sptcompaction:", i);

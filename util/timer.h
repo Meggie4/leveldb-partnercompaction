@@ -28,6 +28,7 @@ enum TimerStep {
     COMPUTE_OVERLLAP,
     PICK_COMPACTION,
     DO_COMPACTION_WORK,
+    DO_SPLITCOMPACTION_WORK,
     /////////////meggie
 	END
 };
@@ -54,6 +55,7 @@ public:
 		message[COMPUTE_OVERLLAP] = "COMPUTE_OVERLLAP";
 		message[PICK_COMPACTION] = "PICK_COMPACTION";
         message[DO_COMPACTION_WORK] = "DO_COMPACTION_WORK";
+        message[DO_SPLITCOMPACTION_WORK] = "DO_SPLITCOMPACTION_WORK";
 		clear();
 	}
 

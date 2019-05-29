@@ -1005,6 +1005,7 @@ bool DBImpl::ValidAndInRange(Iterator* iter, InternalKey end,
     return true;
 }
 
+/*
 void DBImpl::DealWithTraditionCompaction(CompactionState* compact, 
                         TSplitCompaction* t_sptcompaction) {
 	DEBUG_T("in DealWithTraditionCompaction\n");
@@ -1032,11 +1033,11 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
     SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
    
     DEBUG_T("before scan iter, victim_iter:\n");
-    /*for(; ValidAndInRange(victim_iter, victim_end, 
-                containsend, &ikey_victim); victim_iter->Next()) {
-        Slice user_key = ikey_victim.user_key;
-        DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
-    }*/
+    //for(; ValidAndInRange(victim_iter, victim_end, 
+    //            containsend, &ikey_victim); victim_iter->Next()) {
+    //    Slice user_key = ikey_victim.user_key;
+    //    DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
+    //}
 
     for(; victim_iter->Valid(); victim_iter->Next()) {
         Slice victim_key = victim_iter->key();
@@ -1272,6 +1273,100 @@ void DBImpl::DealWithTraditionCompaction(CompactionState* compact,
     }
 
 }
+*/
+
+void DBImpl::DealWithTraditionCompaction(CompactionState* compact, 
+                        TSplitCompaction* t_sptcompaction) {
+	DEBUG_T("in DealWithTraditionCompaction\n");
+	DEBUG_T("victim_start:%s, victim_end:%s\n", 
+					t_sptcompaction->victim_start.user_key().ToString().c_str(),
+					t_sptcompaction->victim_end.user_key().ToString().c_str());
+    
+    Iterator* list[2];
+    list[0] = t_sptcompaction->victim_iter;
+    list[1] = t_sptcompaction->inputs1_iter;
+    Iterator* merge_iter = NewMergingIterator(&internal_comparator_,
+            list, 2);
+    merge_iter->SetChildRange(0, 
+            t_sptcompaction->victim_start.Encode(),
+            t_sptcompaction->victim_end.Encode(), 
+            t_sptcompaction->containsend);
+    merge_iter->SeekToFirst();
+    
+    Status status;
+    ParsedInternalKey ikey;
+    Iterator* current_iter;
+    std::string current_user_key;
+    bool has_current_user_key = false;
+    SequenceNumber last_sequence_for_key = kMaxSequenceNumber;
+
+    for(; merge_iter->Valid() && !shutting_down_.Acquire_Load(); ) {
+        Slice key = merge_iter->key();
+        bool drop = false;
+        if(!ParseInternalKey(key, &ikey)){
+             current_user_key.clear();
+             has_current_user_key = false;
+             last_sequence_for_key = kMaxSequenceNumber;
+        } else {
+             if (!has_current_user_key ||
+                user_comparator()->Compare(ikey.user_key,
+                                         Slice(current_user_key)) != 0) {
+                // First occurrence of this user key
+                current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+                has_current_user_key = true;
+                last_sequence_for_key = kMaxSequenceNumber;
+              }
+              if (last_sequence_for_key <= compact->smallest_snapshot) {
+                drop = true;    
+              } else if (ikey.type == kTypeDeletion &&
+                     ikey.sequence <= compact->smallest_snapshot &&
+                     compact->compaction->IsBaseLevelForKey(ikey.user_key)) {
+                drop = true;
+              }
+              last_sequence_for_key = ikey.sequence;
+        }
+        if(!drop) {
+            if(compact->builder == nullptr) {
+                status = OpenCompactionOutputFile(compact);
+                if(!status.ok()) {
+                    break;
+                }
+            }    
+            if(compact->builder->NumEntries() == 0) {
+                DEBUG_T("first entry of a sstable\n");
+                compact->current_output()->smallest.DecodeFrom(key);
+                DEBUG_T("after first entry of a sstable\n");
+            }
+
+            compact->current_output()->largest.DecodeFrom(key);
+            compact->builder->Add(key, merge_iter->value());
+
+            if(compact->builder->FileSize() >= 
+                    compact->compaction->MaxOutputFileSize()) {
+                DEBUG_T("to finish generated a sstable\n");
+                status = FinishCompactionOutputFile(compact, merge_iter);
+                if(!status.ok()) {
+                    break;
+                }
+                DEBUG_T("have generated a sstable\n");
+            }
+        }
+        merge_iter->Next();
+    }
+    
+    if(status.ok() && shutting_down_.Acquire_Load()) {
+        status = Status::IOError("Deleting DB during compaction");
+    }
+   
+    if(status.ok() && compact->builder != nullptr) {
+        status = FinishCompactionOutputFile(compact, merge_iter);
+    }
+
+    if(!status.ok()) {
+        RecordBackgroundError(status);
+    }
+    delete merge_iter;
+}
 
 void DBImpl::DealWithPartnerCompaction(CompactionState* compact, 
                             SplitCompaction* p_sptcompaction) {
@@ -1302,10 +1397,10 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
 
     for(; ValidAndInRange(input, victim_end, containsend, &ikey) 
                 && !shutting_down_.Acquire_Load(); ) {
-        DEBUG_T("partner compaction, user_key:%s\n",
-                ikey.user_key.ToString().c_str());
+        //DEBUG_T("partner compaction, user_key:%s\n",
+          //      ikey.user_key.ToString().c_str());
         Slice key = input->key();
-        DEBUG_T("Get key\n");
+        //DEBUG_T("Get key\n");
         // Prioritize immutable compaction work
         /*if (has_imm_.NoBarrier_Load() != nullptr) {
           mutex_.Lock();
@@ -1399,11 +1494,10 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
 Status DBImpl::DoSplitCompactionWork(Compaction* c) {
     std::vector<SplitCompaction*> t_sptcompactions;
     std::vector<SplitCompaction*> p_sptcompactions;
-    start_timer(COMPUTE_OVERLLAP); 
+    start_timer(DO_SPLITCOMPACTION_WORK); 
 	DEBUG_T("---------------start in SplitCompaction----------------\n");
     versions_->GetSplitCompactions(c, t_sptcompactions,
 									 p_sptcompactions);
-    record_timer(COMPUTE_OVERLLAP);
 
     DEBUG_T("t_sptcompactions size:%d, p_sptcompaction size:%d\n",
             t_sptcompactions.size(), p_sptcompactions.size());
@@ -1480,6 +1574,7 @@ Status DBImpl::DoSplitCompactionWork(Compaction* c) {
 
     DEBUG_T("-------------finish DoSplitCompactionWork-----------\n\n");
 	
+    record_timer(DO_SPLITCOMPACTION_WORK); 
 	return Status::OK();
 }
 ////////////////meggie
@@ -1505,7 +1600,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   }
 
   ///////////////meggie
-  if(compact->compaction->level() >= 1) {
+  /*if(compact->compaction->level() >= 1) {
     start_timer(COMPUTE_OVERLLAP); 
     std::vector<SplitCompaction*> t_sptcompactions;
     std::vector<SplitCompaction*> p_sptcompactions;
@@ -1529,7 +1624,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         delete tcompactionlist[k];
     }
 	DEBUG_T("---------------end in SplitCompaction----------------\n\n");
-  }
+  }*/
   ///////////////meggie
 
 

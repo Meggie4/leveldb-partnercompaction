@@ -67,13 +67,6 @@ struct TSplitCompaction {
 	
 	TSplitCompaction(): victim_iter(nullptr),
 			inputs1_iter(nullptr){}
-	
-	~TSplitCompaction() {
-		if(victim_iter)
-			delete victim_iter;
-		if(inputs1_iter)
-			delete inputs1_iter;
-	}
 };
 //////////////meggie
 

@@ -903,10 +903,10 @@ class VersionSet::Builder {
     if (levels_[level].deleted_files.count(f->number) > 0) {
       // File is deleted: do nothing
     } else {
-      /*if(level > 1)
+      if(level > 1)
          DEBUG_T("MaybeAddFile, smallest:%s, largest:%s\n",
               f->smallest.user_key().ToString().c_str(),
-              f->largest.user_key().ToString().c_str());*/
+              f->largest.user_key().ToString().c_str());
       std::vector<FileMetaData*>* files = &v->files_[level];
       if (level > 0 && !files->empty()) {
         // Must not overlap
@@ -1431,6 +1431,7 @@ void VersionSet::MergeTSplitCompaction(Compaction* c,
             //       t_sptcompaction->containsend);
 		    //TestIterator(victim_iter);
 
+            /*
             Iterator* list[2];
             list[0] = victim_iter;
             list[1] = inputs1_iter;
@@ -1451,8 +1452,9 @@ void VersionSet::MergeTSplitCompaction(Compaction* c,
                 DEBUG_T("user_key:%s\n", user_key.ToString().c_str());
             }
             DEBUG_T("print merge iter end\n");
-
-            delete merge_iter;
+            */
+            //delete merge_iter;
+            //DEBUG_T("after delete merge_iter\n");
 
             t_sptcompaction->victim_iter = victim_iter;
 			t_sptcompaction->inputs1_iter = inputs1_iter;
@@ -1660,16 +1662,20 @@ void VersionSet::GetSplitCompactions(Compaction* c,
         DEBUG_T("inputs1[%d], sptcompaction:", i);
         PrintSplitCompaction(sptcompaction);
        
-        if(inputs1[i]->partners.size() != 0)
+        if(inputs1[i]->partners.size() != 0) {
             t_sptcompactions.push_back(sptcompaction);
+            DEBUG_T("has partners\n");
+        }
         else {
-            double ratio = GetOverlappingRatio(c, sptcompaction);
-			DEBUG_T("ratio:%lf\n", ratio);
-            if(ratio < PCompactionThresh){
-                p_sptcompactions.push_back(sptcompaction);
-			}
-            else 
-                t_sptcompactions.push_back(sptcompaction);
+            DEBUG_T("has no partners\n");
+            p_sptcompactions.push_back(sptcompaction);
+            //double ratio = GetOverlappingRatio(c, sptcompaction);
+			//DEBUG_T("ratio:%lf\n", ratio);
+            //if(ratio < PCompactionThresh){
+            //    p_sptcompactions.push_back(sptcompaction);
+			//}
+            //else 
+            //    t_sptcompactions.push_back(sptcompaction);
         } 
     }
 }

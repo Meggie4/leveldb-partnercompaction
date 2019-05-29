@@ -772,7 +772,7 @@ void DBImpl::BackgroundCompaction() {
         versions_->LevelSummary(&tmp));
   } else {
     ////////////meggie
-    if(c->level() >= 0) {
+    if(c->level() == 0) {
         CompactionState* compact = new CompactionState(c);
         status = DoCompactionWork(compact);
         if (!status.ok()) {

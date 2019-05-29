@@ -1480,6 +1480,8 @@ void DBImpl::DealWithPartnerCompaction(CompactionState* compact,
                     inputs1->largest.user_key().ToString().c_str());
             if(internal_comparator_.Compare(ptner.partner_largest, inputs1->largest) > 0)
                 inputs1->largest = ptner.partner_largest;
+            if(internal_comparator_.Compare(ptner.partner_smallest, inputs1->smallest) < 0)
+                inputs1->smallest = ptner.partner_smallest;
             DEBUG_T("UpdateFile, smallest:%s, largest:%s\n",
                 inputs1->smallest.user_key().ToString().c_str(),
                 inputs1->largest.user_key().ToString().c_str());
